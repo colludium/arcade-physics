@@ -57,8 +57,12 @@ class QuadTree
      * tree never modifies it. The buffer is reused between calls to avoid
      * allocating on every query, which means the array returned by `retrieve()`
      * is only valid until the next `retrieve()` on the same node.
+     *
+     * Allocated on first use: queries almost always go through the root, so
+     * child nodes would otherwise each allocate an array they never fill,
+     * making every tree more expensive to build.
      */
-    private var _retrieved:Array<Body> = [];
+    private var _retrieved:Array<Body> = null;
 
     private var _pool:QuadTreePool = null;
 
@@ -281,6 +285,9 @@ class QuadTree
     {
 
         if (output == null) {
+            if (_retrieved == null) {
+                _retrieved = [];
+            }
             output = _retrieved;
         }
         Extensions.setArrayLength(output, 0);

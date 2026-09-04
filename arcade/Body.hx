@@ -234,11 +234,50 @@ class Body implements Collidable
     /** The mass of the Body. When two bodies collide their mass is used in the calculation to determine the exchange of velocity. */
     public var mass:Float = 1;
 
-    /** The angle of the Body's **velocity** in radians. */
-    public var angle:Float = 0;
+    /**
+     * The angle of the Body's **velocity** in radians.
+     *
+     * Derived from the velocity, and computed on first read after each
+     * `preUpdate` rather than every frame: an `atan2` per body per frame is a
+     * measurable cost for a value most games never look at. Assigning to it
+     * still works and overrides the derived value until the next `preUpdate`.
+     */
+    public var angle(get, set):Float;
+    var _angle:Float = 0;
+    var _angleDirty:Bool = false;
+    inline function get_angle():Float {
+        if (_angleDirty) {
+            _angle = Math.atan2(this.velocityY, this.velocityX);
+            _angleDirty = false;
+        }
+        return _angle;
+    }
+    inline function set_angle(angle:Float):Float {
+        _angleDirty = false;
+        return _angle = angle;
+    }
 
-    /** The speed of the Body in pixels per second, equal to the magnitude of the velocity. */
-    public var speed:Float = 0;
+    /**
+     * The speed of the Body in pixels per second, equal to the magnitude of the velocity.
+     *
+     * Like `angle`, this is derived from the velocity and computed on first
+     * read rather than on every frame, to keep a `sqrt` per body per frame off
+     * the hot path.
+     */
+    public var speed(get, set):Float;
+    var _speed:Float = 0;
+    var _speedDirty:Bool = false;
+    inline function get_speed():Float {
+        if (_speedDirty) {
+            _speed = Math.sqrt(this.velocityX * this.velocityX + this.velocityY * this.velocityY);
+            _speedDirty = false;
+        }
+        return _speed;
+    }
+    inline function set_speed(speed:Float):Float {
+        _speedDirty = false;
+        return _speed = speed;
+    }
 
     /** A const reference to the direction the Body is traveling or facing: NONE, LEFT, RIGHT, UP, or DOWN. If the Body is moving on both axes, UP and DOWN take precedence. */
     public var facing:Direction = Direction.NONE;
@@ -477,6 +516,16 @@ class Body implements Collidable
 
             this.updateCenter();
 
+            //  This body is about to move, so any cached ordering or spatial
+            //  index of the groups holding it no longer reflects reality
+            if (this.groups != null)
+            {
+                for (i in 0...this.groups.length)
+                {
+                    this.groups[i].invalidate();
+                }
+            }
+
             this.rotation = rotation;
 
             this.preRotation = this.rotation;
@@ -498,12 +547,14 @@ class Body implements Collidable
                 this.y += this.newVelocityY;
                 this.updateCenter();
 
+                //  Both are derived from the velocity; flag them instead of
+                //  computing an atan2 and a sqrt for every body every frame
                 if (this.x != this.prevX || this.y != this.prevY)
                 {
-                    this.angle = Math.atan2(this.velocityY, this.velocityX);
+                    this._angleDirty = true;
                 }
 
-                this.speed = Math.sqrt(this.velocityX * this.velocityX + this.velocityY * this.velocityY);
+                this._speedDirty = true;
 
                 //  Now the State update will throw collision checks at the Body
                 //  And finally we'll integrate the new position back to the parent object in postUpdate
@@ -951,6 +1002,14 @@ class Body implements Collidable
     {
 
         this.stop();
+
+        if (this.groups != null)
+        {
+            for (i in 0...this.groups.length)
+            {
+                this.groups[i].invalidate();
+            }
+        }
 
         this.x = x;
         this.y = y;

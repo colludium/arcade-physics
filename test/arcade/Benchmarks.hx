@@ -176,7 +176,7 @@ class Benchmarks {
 
     static function bodyVsGroup():Void {
 
-        Bench.section('2. One body vs a group (the only path that uses the QuadTree)');
+        Bench.section('2. One body vs a group (the QuadTree path)');
         Bench.header();
 
         for (count in [100, 500, 2000]) {
@@ -207,7 +207,7 @@ class Benchmarks {
 
     static function groupVsGroup():Void {
 
-        Bench.section('3. Group vs group (always brute force — no QuadTree on this path)');
+        Bench.section('3. Group vs group (sweep and prune when the groups are sorted)');
         Bench.header();
 
         for (count in [50, 100, 200]) {
@@ -235,7 +235,7 @@ class Benchmarks {
 
     static function groupVsItself():Void {
 
-        Bench.section('4. Group vs itself (full n² loop, every pair visited twice)');
+        Bench.section('4. Group vs itself (each pair visited once)');
         Bench.header();
 
         for (count in [50, 100, 200, 400]) {
@@ -319,6 +319,9 @@ class Benchmarks {
             group.sortDirection = SortDirection.LEFT_RIGHT;
 
             Bench.measure('sort $count shuffled bodies', count, frames(60), () -> {
+                // Moving bodies directly does not go through preUpdate, so the
+                // group's cached ordering has to be invalidated by hand
+                group.invalidate();
                 world.sort(group);
                 // Re-shuffle by nudging positions, otherwise every run after the
                 // first sorts an already sorted array (the easy case)
@@ -337,11 +340,23 @@ class Benchmarks {
         var sortedGroup = toGroup(sortedBodies);
         sortedGroup.sortDirection = SortDirection.LEFT_RIGHT;
         Bench.measure('sort 1000 already sorted bodies', 1000, frames(60), () -> {
+            sortedGroup.invalidate();
             world.sort(sortedGroup);
         }, () -> {
             sortedBodies = scatter(1000);
             sortedGroup = toGroup(sortedBodies);
             sortedGroup.sortDirection = SortDirection.LEFT_RIGHT;
+        });
+
+        var cachedBodies = scatter(1000);
+        var cachedGroup = toGroup(cachedBodies);
+        cachedGroup.sortDirection = SortDirection.LEFT_RIGHT;
+        Bench.measure('sort 1000 bodies, cache already valid', 1000, frames(60), () -> {
+            world.sort(cachedGroup);
+        }, () -> {
+            cachedBodies = scatter(1000);
+            cachedGroup = toGroup(cachedBodies);
+            cachedGroup.sortDirection = SortDirection.LEFT_RIGHT;
         });
 
         // How much of a body-vs-group frame is the sort?
@@ -389,8 +404,8 @@ class Benchmarks {
         var bodies = scatter(2000);
         final tree = new QuadTree(null, 0, 0, 2000, 2000, 10, 4);
         tree.populate(bodies);
-        // This is what 50 body-vs-group calls against one 2000 body group cost,
-        // because each call builds its own tree for a single query.
+        // What 50 body-vs-group calls would cost if every call built its own
+        // tree, which is what the library used to do.
         Bench.measure('50 build+retrieve cycles over 2000 bodies', 50, frames(30), () -> {
             for (i in 0...50) {
                 tree.clear();
@@ -400,8 +415,8 @@ class Benchmarks {
             }
         }, () -> bodies = scatter(2000));
 
-        // The same 50 queries against a tree built once: what the broadphase
-        // would cost if the tree were reused across calls within a frame.
+        // The same 50 queries against a tree built once, which is what a group
+        // now does for every query after the first in a frame.
         var sharedBodies = scatter(2000);
         Bench.measure('50 retrieves against one reused tree', 50, frames(30), () -> {
             final shared = new QuadTree(null, 0, 0, 2000, 2000, 10, 4);
@@ -551,8 +566,7 @@ class Benchmarks {
         }, build);
 
         // The same scene, but colliding the enemies as a group instead of
-        // looping body by body: this is the trap, because group vs group
-        // never uses the QuadTree.
+        // looping body by body.
         Bench.measure('same scene, enemies as group vs platform group', 381, frames(60), () -> {
             pre(world, all);
             world.collide(player, platformGroup);
@@ -644,7 +658,7 @@ class Benchmarks {
         Bench.compare('    collide() vs overlap()', 'overlap (detect only) , 200 self-colliding', 'collide (detect+resolve), 200 self-colliding');
         Bench.println('');
 
-        Bench.println('  SORTING — every collide against a group re-sorts it:');
+        Bench.println('  SORTING — cached per frame, so only the first call in a frame pays:');
         Bench.compare('    LEFT_RIGHT vs NONE, 1 vs 2000', 'sortDirection NONE       , 1 vs 2000', 'sortDirection LEFT_RIGHT, 1 vs 2000');
         Bench.compare('    shuffled vs already sorted, 1000', 'sort 1000 already sorted bodies', 'sort 1000 shuffled bodies');
         Bench.println('');

@@ -1,5 +1,15 @@
 package arcade;
 
+/**
+ * Stable merge sorts for body arrays, one per sort direction.
+ *
+ * The four classes below are deliberately identical apart from their `cmp`
+ * function: keeping them separate lets each comparison inline into the sort,
+ * which a shared implementation taking a comparator would not do on every
+ * target. The cost of that choice is that any fix to the sort itself has to be
+ * applied to all four.
+ */
+
 /*
  * Copyright (C)2005-2018 Haxe Foundation
  *

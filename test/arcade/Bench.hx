@@ -66,6 +66,18 @@ class Bench {
     /** Fraction of frames run untimed first, to let the JIT settle. */
     public static var warmupFrames:Int = 8;
 
+    /**
+     * Minimum wall time, in milliseconds, that a timed run must take.
+     *
+     * Scenarios that finish faster are repeated with more frames until they
+     * clear this, otherwise timer resolution and scheduling noise dominate and
+     * a fast scenario can measure slower than a slow one.
+     */
+    public static var minRunMs:Float = 15;
+
+    /** How far `measure` may multiply the requested frame count to reach `minRunMs`. */
+    public static var maxFrameGrowth:Int = 256;
+
     static var currentSection:String = '';
 
     /**
@@ -98,18 +110,28 @@ class Bench {
         for (_ in 0...warmupFrames) frame();
 
         var best:Float = -1;
+        var timedFrames = frames;
 
-        for (_ in 0...repeats) {
-            if (setup != null) setup();
+        while (true) {
+            best = -1;
 
-            final start = haxe.Timer.stamp();
-            for (_ in 0...frames) frame();
-            final elapsed = (haxe.Timer.stamp() - start) * 1000;
+            for (_ in 0...repeats) {
+                if (setup != null) setup();
 
-            if (best < 0 || elapsed < best) best = elapsed;
+                final start = haxe.Timer.stamp();
+                for (_ in 0...timedFrames) frame();
+                final elapsed = (haxe.Timer.stamp() - start) * 1000;
+
+                if (best < 0 || elapsed < best) best = elapsed;
+            }
+
+            //  Too quick to time accurately: run it for longer
+            if (best >= minRunMs || timedFrames >= frames * maxFrameGrowth) break;
+
+            timedFrames *= 4;
         }
 
-        final result = new BenchResult(currentSection, name, units, frames, best, note);
+        final result = new BenchResult(currentSection, name, units, timedFrames, best, note);
         results.push(result);
         printRow(result);
         return result;

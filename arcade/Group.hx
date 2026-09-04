@@ -14,7 +14,109 @@ class Group implements Collidable {
     /** The sorting direction for bodies in this group. */
     public var sortDirection:SortDirection = SortDirection.INHERIT;
 
+    /**
+     * The direction this group is currently sorted in, or `NONE` if the cached
+     * ordering is not valid.
+     */
+    var cachedSortDirection:SortDirection = SortDirection.NONE;
+
+    /**
+     * A spatial index over this group's bodies, owned by the group and rebuilt
+     * at most once per frame rather than once per collision call.
+     */
+    var cachedQuadTree:QuadTree = null;
+
+    /** Whether `cachedQuadTree` reflects the bodies at their current positions. */
+    var cachedQuadTreeValid:Bool = false;
+
+    /** How many collision queries have been made since the bodies last moved. */
+    var queriesSinceInvalidate:Int = 0;
+
     public function new() {
+
+    }
+
+    /**
+     * Marks this group's cached ordering and spatial index as out of date.
+     *
+     * Called automatically when the group's membership changes and when a
+     * member body runs `preUpdate`, which covers the normal update cycle. Call
+     * it yourself if you move a body directly without going through
+     * `preUpdate`, otherwise collisions in that frame may be resolved against
+     * the previous positions.
+     */
+    inline public function invalidate():Void {
+
+        cachedSortDirection = SortDirection.NONE;
+        cachedQuadTreeValid = false;
+        queriesSinceInvalidate = 0;
+
+    }
+
+    /**
+     * Records a collision query against this group and reports whether it is
+     * worth answering from a spatial index.
+     *
+     * Building a tree over N bodies costs more than the single linear scan it
+     * would replace, so the first query after the bodies move is answered by
+     * scanning. From the second query onward the tree is built once and reused
+     * for the rest of the frame, which is where it pays for itself.
+     */
+    inline public function useQuadTreeForNextQuery():Bool {
+
+        queriesSinceInvalidate++;
+        return queriesSinceInvalidate > 1;
+
+    }
+
+    /**
+     * Whether the group's bodies are already ordered in the given direction,
+     * so that the sort can be skipped.
+     */
+    inline public function isSortedBy(direction:SortDirection):Bool {
+
+        return direction != SortDirection.NONE && cachedSortDirection == direction;
+
+    }
+
+    /**
+     * Records that the group has just been sorted in the given direction.
+     */
+    inline public function markSortedBy(direction:SortDirection):Void {
+
+        cachedSortDirection = direction;
+
+    }
+
+    /**
+     * Returns this group's spatial index, rebuilding it only when the bodies
+     * have moved since it was last built.
+     *
+     * The tree belongs to the group and is reused frame after frame, so a
+     * collision call no longer pays to build one for a single query.
+     *
+     * @param x Bounds of the world the tree should cover.
+     * @param y Bounds of the world the tree should cover.
+     * @param width Bounds of the world the tree should cover.
+     * @param height Bounds of the world the tree should cover.
+     * @param maxObjects Maximum number of bodies per quad.
+     * @param maxLevels Maximum number of subdivisions.
+     */
+    public function getQuadTree(x:Float, y:Float, width:Float, height:Float, maxObjects:Int, maxLevels:Int):QuadTree {
+
+        if (cachedQuadTree == null) {
+            cachedQuadTree = new QuadTree(null, x, y, width, height, maxObjects, maxLevels);
+            cachedQuadTreeValid = false;
+        }
+
+        if (!cachedQuadTreeValid) {
+            cachedQuadTree.clear();
+            cachedQuadTree.reset(x, y, width, height, maxObjects, maxLevels);
+            cachedQuadTree.populate(objects);
+            cachedQuadTreeValid = true;
+        }
+
+        return cachedQuadTree;
 
     }
 
@@ -31,6 +133,7 @@ class Group implements Collidable {
         }
         else {
             objects.push(body);
+            invalidate();
         }
 
         if (body.groups != null) {
@@ -55,6 +158,7 @@ class Group implements Collidable {
         var index = objects.indexOf(body);
         if (index != -1) {
             objects.splice(index, 1);
+            invalidate();
         }
         else {
             trace('[warning] Cannot remove body $body from group, index is -1');

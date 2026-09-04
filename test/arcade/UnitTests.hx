@@ -35,6 +35,7 @@ class UnitTests {
         worldHelpers();
         geometry();
         extensions();
+        broadphase();
         regressions();
 
         final code = Assert.report();
@@ -1174,10 +1175,7 @@ class UnitTests {
             Assert.equals(1, hits);
         });
 
-        Assert.test('group vs itself visits every ordered pair', () -> {
-            // The implementation runs a full n^2 loop rather than n^2/2, so
-            // every unordered pair is reported in both orders. Using overlap
-            // (which does not separate) makes the double visit observable.
+        Assert.test('group vs itself reports each pair exactly once', () -> {
             final world = newWorld();
             final group = new Group();
             final a = new Body(100, 100, 20, 20);
@@ -1186,8 +1184,32 @@ class UnitTests {
             group.add(a);
             group.add(b);
             var hits = 0;
-            step(world, [a, b], () -> world.overlap(group, (_, _) -> hits++));
-            Assert.equals(2, hits, 'group vs itself visits (a,b) and (b,a)');
+            var first:Body = null;
+            var second:Body = null;
+            step(world, [a, b], () -> world.overlap(group, (b1, b2) -> {
+                hits++;
+                first = b1;
+                second = b2;
+            }));
+            Assert.equals(1, hits, 'each unordered pair is visited once');
+            Assert.equals(a, first, 'the body earlier in the group is passed first');
+            Assert.equals(b, second);
+        });
+
+        Assert.test('group vs itself checks every pair in a larger group', () -> {
+            // n bodies, all mutually overlapping, means n*(n-1)/2 pairs
+            final world = newWorld();
+            final group = new Group();
+            final bodies = [];
+            for (i in 0...6) {
+                final body = new Body(100 + i, 100, 20, 20);
+                group.add(body);
+                bodies.push(body);
+            }
+            bodies[0].velocityX = 1;
+            var hits = 0;
+            step(world, bodies, () -> world.overlap(group, (_, _) -> hits++));
+            Assert.equals(15, hits, '6 bodies give 15 unordered pairs');
         });
 
         Assert.test('group vs itself separates a pair only once', () -> {
@@ -1695,6 +1717,253 @@ class UnitTests {
             final other = [1, 2];
             other.setArrayLength(4);
             Assert.equals(4, other.length);
+        });
+
+    }
+
+    /**
+     * The sweep-and-prune early exit, the per-frame sort cache and the group
+     * owned QuadTree are all optimisations that must not change which pairs
+     * collide. These tests check that against a brute force reference.
+     */
+    static function broadphase():Void {
+
+        Assert.suite('Broadphase equivalence');
+
+        /** Builds a deterministic scene of bodies with varied sizes. */
+        function scene(count:Int, seed:Int):Array<Body> {
+            var state = seed;
+            function rnd():Float {
+                state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                return state / 0x3FFFFFFF;
+            }
+            final bodies = [];
+            for (_ in 0...count) {
+                // Deliberately mixed sizes: a wide body is the case a naive
+                // sweep would skip over
+                final size = rnd() < 0.2 ? 120 + rnd() * 80 : 8 + rnd() * 20;
+                final body = new Body(rnd() * 760, rnd() * 560, size, size);
+                body.velocityX = rnd() * 20 - 10;
+                bodies.push(body);
+            }
+            return bodies;
+        }
+
+        /** Collects the colliding pairs as a sorted list of index pairs. */
+        function pairsOf(bodies:Array<Body>, run:(World, Group, Body->Body->Void)->Void, skipTree:Bool, direction:SortDirection):Array<String> {
+            final world = newWorld();
+            world.skipQuadTree = skipTree;
+            world.maxObjectsWithoutQuadTree = skipTree ? 100000 : 4;
+            final group = new Group();
+            for (i in 0...bodies.length) {
+                bodies[i].index = i;
+                group.add(bodies[i]);
+            }
+            group.sortDirection = direction;
+
+            final found = [];
+            step(world, bodies, () -> run(world, group, (b1, b2) -> {
+                // Order-independent key, so the two configurations are comparable
+                final lo = b1.index < b2.index ? b1.index : b2.index;
+                final hi = b1.index < b2.index ? b2.index : b1.index;
+                found.push('$lo-$hi');
+            }));
+            found.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+            return found;
+        }
+
+        function sameLists(reference:Array<String>, candidate:Array<String>, label:String):Void {
+            Assert.equals(reference.length, candidate.length, '$label: found ${candidate.length} pairs, brute force found ${reference.length}');
+            if (reference.length != candidate.length) return;
+            for (i in 0...reference.length) {
+                Assert.equals(reference[i], candidate[i], '$label: pair $i differs');
+            }
+        }
+
+        Assert.test('group vs itself finds the same pairs as brute force', () -> {
+            for (seed in [1, 2, 3, 4, 5]) {
+                final run = (world:World, group:Group, cb:Body->Body->Void) -> world.overlap(group, cb);
+                final reference = pairsOf(scene(60, seed), run, true, SortDirection.NONE);
+                final swept = pairsOf(scene(60, seed), run, false, SortDirection.LEFT_RIGHT);
+                sameLists(reference, swept, 'seed $seed');
+            }
+        });
+
+        Assert.test('group vs itself is unaffected by the sort axis', () -> {
+            final run = (world:World, group:Group, cb:Body->Body->Void) -> world.overlap(group, cb);
+            final reference = pairsOf(scene(60, 9), run, true, SortDirection.NONE);
+            for (direction in [SortDirection.LEFT_RIGHT, SortDirection.RIGHT_LEFT, SortDirection.TOP_BOTTOM, SortDirection.BOTTOM_TOP]) {
+                sameLists(reference, pairsOf(scene(60, 9), run, false, direction), 'direction $direction');
+            }
+        });
+
+        Assert.test('group vs group finds the same pairs as brute force', () -> {
+            for (seed in [11, 12, 13]) {
+                final all = scene(80, seed);
+                final half = Std.int(all.length / 2);
+
+                function run(skipTree:Bool, direction:SortDirection):Array<String> {
+                    final world = newWorld();
+                    world.skipQuadTree = skipTree;
+                    final g1 = new Group();
+                    final g2 = new Group();
+                    for (i in 0...all.length) {
+                        all[i].index = i;
+                        if (i < half) g1.add(all[i]) else g2.add(all[i]);
+                    }
+                    g1.sortDirection = direction;
+                    g2.sortDirection = direction;
+
+                    final found = [];
+                    step(world, all, () -> world.overlap(g1, g2, (b1, b2) -> {
+                        final lo = b1.index < b2.index ? b1.index : b2.index;
+                        final hi = b1.index < b2.index ? b2.index : b1.index;
+                        found.push('$lo-$hi');
+                    }));
+                    found.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+                    return found;
+                }
+
+                sameLists(run(true, SortDirection.NONE), run(false, SortDirection.LEFT_RIGHT), 'seed $seed');
+            }
+        });
+
+        Assert.test('body vs group finds the same bodies with and without the tree', () -> {
+            for (seed in [21, 22, 23]) {
+                final bodies = scene(80, seed);
+                final probe = new Body(300, 250, 90, 90);
+                probe.velocityX = 1;
+
+                function run(skipTree:Bool):Array<String> {
+                    final world = newWorld();
+                    world.skipQuadTree = skipTree;
+                    world.maxObjectsWithoutQuadTree = 4;
+                    final group = new Group();
+                    for (i in 0...bodies.length) {
+                        bodies[i].index = i;
+                        group.add(bodies[i]);
+                    }
+                    final found = [];
+                    // Two queries, so the second one goes through the tree
+                    step(world, [probe].concat(bodies), () -> {
+                        world.overlap(probe, group);
+                        world.overlap(probe, group, (_, other) -> found.push('' + other.index));
+                    });
+                    found.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+                    return found;
+                }
+
+                sameLists(run(true), run(false), 'seed $seed');
+            }
+        });
+
+        Assert.test('the tree is only built once several queries need it', () -> {
+            // The first query after the bodies move is answered by scanning;
+            // building a tree for a single query costs more than it saves
+            final world = newWorld();
+            world.maxObjectsWithoutQuadTree = 4;
+            final group = new Group();
+            final bodies = [];
+            for (i in 0...40) {
+                final body = new Body(20 + (i % 10) * 70, 20 + Std.int(i / 10) * 120, 16, 16);
+                group.add(body);
+                bodies.push(body);
+            }
+            final probe = new Body(bodies[13].x + 2, bodies[13].y + 2, 8, 8);
+            probe.velocityX = 1;
+
+            var first = 0;
+            var second = 0;
+            step(world, [probe].concat(bodies), () -> {
+                world.overlap(probe, group, (_, _) -> first++);
+                world.overlap(probe, group, (_, _) -> second++);
+            });
+            Assert.equals(1, first, 'the scanned query must find the body');
+            Assert.equals(1, second, 'the tree backed query must agree with it');
+        });
+
+        Assert.test('a group re-sorts only after its bodies move', () -> {
+            final world = newWorld();
+            final group = new Group();
+            final bodies = [];
+            for (x in [300.0, 100.0, 200.0]) {
+                final body = new Body(x, 0, 10, 10);
+                group.add(body);
+                bodies.push(body);
+            }
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+
+            world.sort(group);
+            Assert.equals(100.0, group.objects[0].x, 'first sort orders the group');
+
+            // Moving a body directly does not go through preUpdate, so the
+            // cached order is deliberately kept until invalidated
+            group.objects[2].x = 1;
+            world.sort(group);
+            Assert.equals(100.0, group.objects[0].x, 'the cached order is reused');
+
+            group.invalidate();
+            world.sort(group);
+            Assert.equals(1.0, group.objects[0].x, 'invalidate forces a re-sort');
+        });
+
+        Assert.test('preUpdate invalidates the caches of every group holding the body', () -> {
+            final world = newWorld();
+            final g1 = new Group();
+            final g2 = new Group();
+            g1.sortDirection = SortDirection.LEFT_RIGHT;
+            g2.sortDirection = SortDirection.LEFT_RIGHT;
+
+            final a = new Body(300, 0, 10, 10);
+            final b = new Body(100, 0, 10, 10);
+            for (group in [g1, g2]) {
+                group.add(a);
+                group.add(b);
+            }
+
+            world.sort(g1);
+            world.sort(g2);
+            Assert.equals(b, g1.objects[0]);
+
+            // Move a to the front and run a frame: both groups must re-sort
+            a.x = 1;
+            step(world, [a, b]);
+            world.sort(g1);
+            world.sort(g2);
+            Assert.equals(a, g1.objects[0], 'g1 should have been re-sorted');
+            Assert.equals(a, g2.objects[0], 'g2 should have been re-sorted');
+        });
+
+        Assert.test('adding or removing a body invalidates the caches', () -> {
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            group.add(new Body(300, 0, 10, 10));
+            group.add(new Body(200, 0, 10, 10));
+            world.sort(group);
+            Assert.equals(200.0, group.objects[0].x);
+
+            group.add(new Body(50, 0, 10, 10));
+            world.sort(group);
+            Assert.equals(50.0, group.objects[0].x, 'adding a body must force a re-sort');
+        });
+
+        Assert.test('a wide body is not skipped by the sweep', () -> {
+            // A body far to the left but wide enough to reach the probe is the
+            // case an early exit gets wrong if it breaks on the wrong edge
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+
+            final wide = new Body(0, 100, 400, 20);
+            final narrow = new Body(390, 100, 20, 20);
+            group.add(wide);
+            group.add(narrow);
+
+            var hits = 0;
+            narrow.velocityX = 1;
+            step(world, [wide, narrow], () -> world.overlap(group, (_, _) -> hits++));
+            Assert.equals(1, hits, 'the wide body overlaps the narrow one');
         });
 
     }
