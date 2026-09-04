@@ -36,7 +36,6 @@ class UnitTests {
         geometry();
         extensions();
         regressions();
-        knownIssues();
 
         final code = Assert.report();
         #if sys
@@ -165,11 +164,34 @@ class UnitTests {
             Assert.isFalse(body.hitTest(15, 35));
         });
 
-        Assert.test('hitTest rejects points outside the bounding box of a circle', () -> {
+        Assert.test('hitTest uses the center and radius for circular bodies', () -> {
             final body = new Body(0, 0, 20, 20);
             body.setCircle(10);
+            // The circle is centered on (10,10) with radius 10, matching what
+            // World.intersects and separateCircle use
+            Assert.isTrue(body.hitTest(10, 10), 'the center is inside the circle');
+            Assert.isTrue(body.hitTest(18, 10));
+            Assert.isTrue(body.hitTest(10, 18));
+            // A rectangle would contain these corners, a circle does not
+            Assert.isFalse(body.hitTest(1, 1), 'the top left corner is outside the circle');
+            Assert.isFalse(body.hitTest(19, 19));
+            // Outside the bounding box entirely
             Assert.isFalse(body.hitTest(-5, 10));
             Assert.isFalse(body.hitTest(10, 25));
+        });
+
+        Assert.test('circle hitTest agrees with circle collision', () -> {
+            final world = newWorld();
+            final circle = new Body(100, 100, 20, 20);
+            circle.setCircle(10);
+            // A one pixel probe centered where hitTest reports a hit must also
+            // be reported as intersecting, and vice versa
+            for (offset in [1, 5, 10, 15, 19]) {
+                final probe = new Body(100 + offset, 110, 1, 1);
+                final hit = circle.hitTest(probe.x, probe.y);
+                final intersecting = world.intersects(circle, probe);
+                Assert.equals(hit, intersecting, 'hitTest and intersects disagree at offset $offset');
+            }
         });
 
         Assert.test('deltaX/deltaY report movement during the collision phase', () -> {
@@ -389,15 +411,43 @@ class UnitTests {
             Assert.equals(33.0, world.elapsedMS);
         });
 
-        Assert.test('isPaused is a caller-side flag, it does not stop preUpdate', () -> {
-            // World.isPaused is documented as making preUpdate skip, but it is
-            // the caller's job to honour it: the library never reads it.
+        Assert.test('isPaused halts all motion', () -> {
             final world = newWorld();
+            world.gravityY = 800;
             world.isPaused = true;
             final body = new Body(0, 0, 10, 10);
             body.velocityX = 60;
+            steps(world, [body], 10);
+            Assert.equals(0.0, body.x, 'a paused world must not move bodies');
+            Assert.equals(0.0, body.y);
+            Assert.equals(60.0, body.velocityX, 'velocity is preserved across the pause');
+            Assert.equals(0.0, body.velocityY, 'gravity must not accumulate while paused');
+        });
+
+        Assert.test('unpausing resumes motion from where it stopped', () -> {
+            final world = newWorld();
+            final body = new Body(0, 0, 10, 10);
+            body.velocityX = 60;
             step(world, [body]);
-            Assert.near(1, body.x, 0.0001, 'isPaused is advisory; callers must skip preUpdate themselves');
+            Assert.near(1, body.x);
+
+            world.isPaused = true;
+            steps(world, [body], 10);
+            Assert.near(1, body.x, 0.0001, 'no movement while paused');
+
+            world.isPaused = false;
+            step(world, [body]);
+            Assert.near(2, body.x, 0.0001, 'motion resumes at the same velocity');
+        });
+
+        Assert.test('collision still works while the world is paused', () -> {
+            // isPaused stops motion, but collide/overlap are documented to
+            // keep working
+            final world = newWorld();
+            world.isPaused = true;
+            final a = new Body(100, 100, 20, 20);
+            final b = new Body(110, 100, 20, 20);
+            Assert.isTrue(world.overlap(a, b), 'overlap should still be detected');
         });
 
     }
@@ -1327,6 +1377,47 @@ class UnitTests {
             Assert.equals(-1, tree.getIndex(300, 200, 500, 400), 'a rect straddling quadrants has no single index');
         });
 
+        Assert.test('retrieve does not modify the tree it queries', () -> {
+            final tree = new QuadTree(null, 0, 0, 800, 600, 4, 4);
+            for (i in 0...20) {
+                tree.insert(new Body((i % 5) * 150, Std.int(i / 5) * 130, 10, 10));
+            }
+
+            final first = tree.retrieve(0, 0, 50, 50).length;
+            final second = tree.retrieve(0, 0, 50, 50).length;
+            final third = tree.retrieve(0, 0, 50, 50).length;
+
+            Assert.equals(first, second, 'repeating a query must return the same candidates');
+            Assert.equals(first, third);
+        });
+
+        Assert.test('retrieve results stay correct after querying elsewhere', () -> {
+            final tree = new QuadTree(null, 0, 0, 800, 600, 4, 4);
+            for (i in 0...20) {
+                tree.insert(new Body((i % 5) * 150, Std.int(i / 5) * 130, 10, 10));
+            }
+
+            final corner = tree.retrieve(0, 0, 50, 50).length;
+            tree.retrieve(700, 500, 750, 550);
+            Assert.equals(corner, tree.retrieve(0, 0, 50, 50).length, 'an unrelated query must not affect later ones');
+        });
+
+        Assert.test('retrieve can fill a caller supplied array', () -> {
+            final tree = new QuadTree(null, 0, 0, 800, 600, 10, 4);
+            for (i in 0...6) {
+                tree.insert(new Body(i * 100, 100, 10, 10));
+            }
+
+            final output:Array<Body> = [];
+            final result = tree.retrieve(0, 0, 800, 600, output);
+            Assert.equals(output, result, 'the supplied array should be returned');
+            Assert.equals(6, output.length);
+
+            // And it is cleared, not appended to, on reuse
+            tree.retrieve(0, 0, 800, 600, output);
+            Assert.equals(6, output.length);
+        });
+
         Assert.test('the world reuses pooled trees instead of allocating', () -> {
             final world = newWorld();
             final first = world.getQuadTree();
@@ -1604,67 +1695,6 @@ class UnitTests {
             final other = [1, 2];
             other.setArrayLength(4);
             Assert.equals(4, other.length);
-        });
-
-    }
-
-    /**
-     * Behaviour that looks like a defect but is what the library currently does.
-     *
-     * These tests pin the current behaviour so a change to it is deliberate
-     * rather than accidental. If any of these are fixed, the assertions here
-     * are the ones to update.
-     */
-    static function knownIssues():Void {
-
-        Assert.suite('Known issues (current behaviour pinned)');
-
-        Assert.test('circle hitTest measures from the corner, not the center', () -> {
-            // `Body.circleContains` uses body.x/body.y as the circle origin, but
-            // everywhere else (World.intersects, separateCircle) the circle is
-            // centered on centerX/centerY. So hitTest describes a circle sitting
-            // on the top-left corner of the body, clipped to its bounding box.
-            final body = new Body(0, 0, 20, 20);
-            body.setCircle(10);
-
-            Assert.isFalse(body.hitTest(10, 10), 'the actual center currently reports a miss');
-            Assert.isTrue(body.hitTest(1, 1), 'the top-left corner currently reports a hit');
-
-            // What it should be, once fixed:
-            //   Assert.isTrue(body.hitTest(10, 10));
-            //   Assert.isFalse(body.hitTest(1, 1));
-        });
-
-        Assert.test('QuadTree.retrieve mutates the node it is called on', () -> {
-            // retrieve() appends the results of child nodes into `this.objects`
-            // instead of into a copy, so calling it twice on the same tree
-            // returns progressively more (duplicated) candidates.
-            //
-            // The library's own code paths build a fresh tree per query, so this
-            // is latent there, but it does affect direct users of the public API.
-            final tree = new QuadTree(null, 0, 0, 800, 600, 4, 4);
-            for (i in 0...20) {
-                tree.insert(new Body((i % 5) * 150, Std.int(i / 5) * 130, 10, 10));
-            }
-
-            final first = tree.retrieve(0, 0, 50, 50).length;
-            final second = tree.retrieve(0, 0, 50, 50).length;
-
-            Assert.greater(first, second, 'the second identical query currently returns more results');
-
-            // What it should be, once fixed:
-            //   Assert.equals(first, second);
-        });
-
-        Assert.test('World.isPaused is declared but never read', () -> {
-            // Documented as halting motion, but no code path checks it: callers
-            // have to skip preUpdate themselves.
-            final world = newWorld();
-            world.isPaused = true;
-            final body = new Body(0, 0, 10, 10);
-            body.velocityX = 600;
-            steps(world, [body], 10);
-            Assert.greater(0, body.x, 'the body still moves while the world is "paused"');
         });
 
     }

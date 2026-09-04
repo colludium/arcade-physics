@@ -438,7 +438,9 @@ class Body implements Collidable
     inline public function preUpdate(world:World, x:Float, y:Float, width:Float, height:Float, rotation:Float = 0)
     {
 
-        if (this.enable)
+        //  A paused world skips preUpdate entirely, which also makes postUpdate
+        //  a no-op because `dirty` is never set. Collision methods still work.
+        if (this.enable && !world.isPaused)
         {
 
             this.dirty = true;
@@ -1146,8 +1148,10 @@ class Body implements Collidable
         //  Check if x/y are within the bounds first
         if (body.radius > 0 && x >= body.left && x <= body.right && y >= body.top && y <= body.bottom)
         {
-            var dx = (body.x - x) * (body.x - x);
-            var dy = (body.y - y) * (body.y - y);
+            //  The circle is centered on the body, not on its top left corner,
+            //  which is what World.intersects and separateCircle assume too
+            var dx = (body.centerX - x) * (body.centerX - x);
+            var dy = (body.centerY - y) * (body.centerY - y);
 
             return (dx + dy) <= (body.radius * body.radius);
         }

@@ -50,6 +50,16 @@ class QuadTree
     /** Internal empty array. */
     private var _empty:Array<Body> = [];
 
+    /**
+     * Reusable buffer for `retrieve()` results.
+     *
+     * Results are gathered here instead of into `objects`, so that querying a
+     * tree never modifies it. The buffer is reused between calls to avoid
+     * allocating on every query, which means the array returned by `retrieve()`
+     * is only valid until the next `retrieve()` on the same node.
+     */
+    private var _retrieved:Array<Body> = [];
+
     private var _pool:QuadTreePool = null;
 
     public function new(?pool:QuadTreePool, x:Float, y:Float, width:Float, height:Float, maxObjects:Int = 10, maxLevels:Int = 4, level:Int = 0) {
@@ -267,36 +277,49 @@ class QuadTree
      * @param bottom The bottom edge of the bounds to check.
      * @return Array with all detected objects.
      */
-    public function retrieve(left:Float, top:Float, right:Float, bottom:Float):Array<Body>
+    public function retrieve(left:Float, top:Float, right:Float, bottom:Float, ?output:Array<Body>):Array<Body>
     {
 
-        var returnObjects = this.objects;
+        if (output == null) {
+            output = _retrieved;
+        }
+        Extensions.setArrayLength(output, 0);
 
-        var index = this.getIndex(left, top, right, bottom);
+        _retrieveInto(output, left, top, right, bottom);
+
+        return output;
+
+    }
+
+    /**
+     * Appends this node's candidates, and those of any matching child nodes,
+     * into `output`. Kept separate from `retrieve` so that recursion fills a
+     * single buffer rather than concatenating an array per level.
+     */
+    function _retrieveInto(output:Array<Body>, left:Float, top:Float, right:Float, bottom:Float):Void
+    {
+
+        for (i in 0...this.objects.length) {
+            output.push(this.objects.unsafeGet(i));
+        }
 
         if (this.nodes.length > 0)
         {
+            var index = this.getIndex(left, top, right, bottom);
+
             //  If rect fits into a subnode ..
             if (index != -1)
             {
-                var retrieved = this.nodes.unsafeGet(index).retrieve(left, top, right, bottom);
-                for (i in 0...retrieved.length) {
-                    returnObjects.push(retrieved.unsafeGet(i));
-                }
+                this.nodes.unsafeGet(index)._retrieveInto(output, left, top, right, bottom);
             }
             else
             {
                 //  If rect does not fit into a subnode, check it against all subnodes
                 for (n in 0...4) {
-                    var retrieved = this.nodes.unsafeGet(n).retrieve(left, top, right, bottom);
-                    for (i in 0...retrieved.length) {
-                        returnObjects.push(retrieved.unsafeGet(i));
-                    }
+                    this.nodes.unsafeGet(n)._retrieveInto(output, left, top, right, bottom);
                 }
             }
         }
-
-        return returnObjects;
 
     }
 
