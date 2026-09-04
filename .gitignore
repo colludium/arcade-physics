@@ -1,3 +1,6 @@
 /out/test/arcade-tests.js
 /out/test/arcade-tests.js.map
 .DS_Store
+/out/test/unit-tests.js
+/out/test/unit-tests.js.map
+/out/bench/

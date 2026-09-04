@@ -1,0 +1,5 @@
+# Performance stress tests (runs on the Haxe interpreter)
+-cp .
+-cp test
+-main arcade.Benchmarks
+--interp

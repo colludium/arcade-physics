@@ -1,0 +1,6 @@
+# Headless test suite compiled to JS, run with node
+-cp .
+-cp test
+-main arcade.UnitTests
+-js out/test/unit-tests.js
+-D analyzer-optimize

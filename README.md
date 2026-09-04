@@ -808,6 +808,13 @@ world.skipQuadTree = true;
 body.skipQuadTree = true;
 ```
 
+**Measure before relying on it.** The QuadTree is only used on the
+`body vs group` path, and that path rebuilds the whole tree for a single query.
+In the benchmarks (see [Testing and Benchmarks](#testing-and-benchmarks)) that
+makes it consistently slower than the plain scan it replaces, and slower still
+when the group is clustered into a small area. `group vs group` and
+`group vs itself` never use the tree at all.
+
 ### Optimization Tips
 
 1. **Use Groups** - Always group similar objects for efficient collision checks
@@ -886,6 +893,74 @@ body.skipQuadTree = true;
 - `sortRightLeft(): Void` - Sort by X position (reverse)
 - `sortTopBottom(): Void` - Sort by Y position
 - `sortBottomTop(): Void` - Sort by Y position (reverse)
+
+## Testing and Benchmarks
+
+The repository ships three things you can run:
+
+| Command | What it does |
+|---|---|
+| `./run-unit-tests.sh` | Headless assertion suite (~140 tests) on the Haxe interpreter. Add `--js` to also run it under node. |
+| `./run-benchmarks.sh` | Performance stress tests. Add `--interp` to run without node. |
+| `./run-tests.sh` | Builds the interactive browser demos and opens them. |
+
+Or invoke the compiler directly:
+
+```bash
+haxe build.hxml                # unit tests, interpreter
+haxe build-tests-js.hxml       # unit tests, JS (run: node out/test/unit-tests.js)
+haxe build-benchmarks.hxml     # benchmarks, interpreter
+haxe build-benchmarks-js.hxml  # benchmarks, JS (run: node out/bench/benchmarks.js)
+haxe build-html5.hxml          # interactive demos
+```
+
+### Unit tests
+
+`test/arcade/UnitTests.hx` is a headless, self-checking suite covering motion
+integration, world bounds, separation, mass and bounce, touching/blocked flags,
+callbacks, circle bodies, groups, sorting, the QuadTree, and the `World` helper
+methods. It has no haxelib dependencies — the assertion runner is
+`test/arcade/Assert.hx`. A non-zero exit code means something failed, so it works
+as a CI gate.
+
+There is also a `Known issues` suite that deliberately pins behaviour that looks
+like a defect, so that changing it is a conscious decision. Each of those tests
+carries a comment with the assertion that *should* hold once fixed.
+
+### Benchmarks
+
+`test/arcade/Benchmarks.hx` runs twelve groups of stress tests and prints a
+per-scenario table followed by a summary that compares scenarios against each
+other. Absolute numbers depend on target and machine; the ratios are the point.
+
+Things the benchmarks are designed to expose:
+
+- **The QuadTree costs more than it saves on `body vs group`.**
+  `collideBodyVsGroup` builds a complete tree over the group and then performs a
+  single `retrieve` against it. Building an N-body tree is strictly more work
+  than the linear scan it replaces, so the QuadTree path measures 3-5x slower
+  than `skipQuadTree = true` at 100, 500 and 2000 bodies. If you collide one
+  body against a group, set `world.skipQuadTree = true` (or raise
+  `maxObjectsWithoutQuadTree`) and measure before assuming the tree helps.
+- **Clustering makes it worse.** With `maxLevels` capped at 4, a group packed
+  into a small part of the world cannot be subdivided usefully — every query
+  returns nearly everything, and the build cost is pure loss.
+- **Group vs group and group vs itself never use the QuadTree at all.** Both are
+  plain nested loops, and the measured growth is n^2.0. `collideGroupVsItself`
+  runs the full n² rather than n²/2, so every unordered pair is visited twice.
+- **Sorting is per call, not per frame.** Every `collide`/`overlap` against a
+  group re-sorts it when `sortDirection` is set. If you make several calls
+  against the same group in a frame, you pay for the sort each time; sorting an
+  already sorted array is far cheaper than a shuffled one, but not free.
+- **Call shape dominates body count.** Looping `world.collide(body, group)` over
+  60 bodies is several times slower than one `world.collide(groupA, groupB)`
+  covering the same pairs, because each call rebuilds a QuadTree and re-sorts.
+- **Separation is the cheap part.** Dense contact adds ~30% over sparse, and
+  `collide` costs about the same as `overlap`. Broadphase and per-call overhead
+  dominate, not the narrowphase.
+
+The summary at the end of a run reports each of these as a measured ratio, so
+the conclusions update themselves if the library changes.
 
 ## Credits
 

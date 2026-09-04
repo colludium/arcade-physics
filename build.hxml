@@ -1,4 +1,5 @@
+# Headless assertion-based test suite (runs on the Haxe interpreter)
 -cp .
 -cp test
--main arcade.Test
+-main arcade.UnitTests
 --interp

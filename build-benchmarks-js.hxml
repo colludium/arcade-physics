@@ -1,0 +1,7 @@
+# Performance stress tests compiled to JS, run with node
+-cp .
+-cp test
+-main arcade.Benchmarks
+-js out/bench/benchmarks.js
+-dce full
+-D analyzer-optimize

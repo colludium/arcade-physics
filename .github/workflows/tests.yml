@@ -1,0 +1,46 @@
+name: Tests
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: 4.3.6
+
+      - name: Run unit tests (interpreter)
+        run: haxe build.hxml
+
+      - name: Run unit tests (JavaScript)
+        run: |
+          haxe build-tests-js.hxml
+          node out/test/unit-tests.js
+
+      - name: Build the interactive demos
+        run: haxe build-html5.hxml
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: 4.3.6
+
+      - name: Run performance stress tests
+        run: |
+          haxe build-benchmarks-js.hxml
+          node out/bench/benchmarks.js
