@@ -1,5 +1,7 @@
 package arcade;
 
+using arcade.Extensions;
+
 /**
  * Stable merge sorts for body arrays, one per sort direction.
  *
@@ -51,7 +53,54 @@ class SortBodiesLeftRight {
      * @param a The array of bodies to sort.
      */
     static inline public function sort(a:Array<Body>) {
-        rec(a, 0, a.length);
+        if (!insertionSort(a)) {
+            rec(a, 0, a.length);
+        }
+    }
+
+    /**
+     * Stable insertion sort, used because a group being re-sorted every frame
+     * has barely changed since the last one: bodies move a few pixels, so the
+     * array arrives almost in order and this costs O(n + inversions) where the
+     * merge sort always costs O(n log n).
+     *
+     * It gives up on an array that turns out to be badly out of order — a first
+     * sort, or one after bodies have been teleported — where insertion sort
+     * degrades to O(n^2) and the merge sort is far better. The array is left as
+     * a valid permutation either way, and this sort is stable, so the merge
+     * sort can simply take over.
+     *
+     * @param a The array of bodies to sort.
+     * @return Whether the array is now sorted; false means it was too
+     *         disordered and the merge sort should run instead.
+     */
+    static function insertionSort(a:Array<Body>):Bool {
+
+        //  Enough shifts to handle an array that is merely a bit out of order,
+        //  and few enough that giving up costs much less than the merge sort
+        var budget = a.length * 8;
+
+        for (i in 1...a.length) {
+            var v = a.unsafeGet(i);
+            var j = i - 1;
+
+            while (j >= 0 && a.unsafeGet(j).x > v.x) {
+                a.unsafeSet(j + 1, a.unsafeGet(j));
+                j--;
+                budget--;
+            }
+
+            //  Always complete the insertion, so the array stays a permutation
+            //  of what it was even when the budget has run out
+            a.unsafeSet(j + 1, v);
+
+            if (budget < 0) {
+                return false;
+            }
+        }
+
+        return true;
+
     }
 
     static function rec(a:Array<Body>, from:Int, to:Int) {
@@ -188,7 +237,54 @@ class SortBodiesRightLeft {
      * @param a The array of bodies to sort.
      */
     static inline public function sort(a:Array<Body>) {
-        rec(a, 0, a.length);
+        if (!insertionSort(a)) {
+            rec(a, 0, a.length);
+        }
+    }
+
+    /**
+     * Stable insertion sort, used because a group being re-sorted every frame
+     * has barely changed since the last one: bodies move a few pixels, so the
+     * array arrives almost in order and this costs O(n + inversions) where the
+     * merge sort always costs O(n log n).
+     *
+     * It gives up on an array that turns out to be badly out of order — a first
+     * sort, or one after bodies have been teleported — where insertion sort
+     * degrades to O(n^2) and the merge sort is far better. The array is left as
+     * a valid permutation either way, and this sort is stable, so the merge
+     * sort can simply take over.
+     *
+     * @param a The array of bodies to sort.
+     * @return Whether the array is now sorted; false means it was too
+     *         disordered and the merge sort should run instead.
+     */
+    static function insertionSort(a:Array<Body>):Bool {
+
+        //  Enough shifts to handle an array that is merely a bit out of order,
+        //  and few enough that giving up costs much less than the merge sort
+        var budget = a.length * 8;
+
+        for (i in 1...a.length) {
+            var v = a.unsafeGet(i);
+            var j = i - 1;
+
+            while (j >= 0 && a.unsafeGet(j).x < v.x) {
+                a.unsafeSet(j + 1, a.unsafeGet(j));
+                j--;
+                budget--;
+            }
+
+            //  Always complete the insertion, so the array stays a permutation
+            //  of what it was even when the budget has run out
+            a.unsafeSet(j + 1, v);
+
+            if (budget < 0) {
+                return false;
+            }
+        }
+
+        return true;
+
     }
 
     static function rec(a:Array<Body>, from:Int, to:Int) {
@@ -325,7 +421,54 @@ class SortBodiesTopBottom {
      * @param a The array of bodies to sort.
      */
     static inline public function sort(a:Array<Body>) {
-        rec(a, 0, a.length);
+        if (!insertionSort(a)) {
+            rec(a, 0, a.length);
+        }
+    }
+
+    /**
+     * Stable insertion sort, used because a group being re-sorted every frame
+     * has barely changed since the last one: bodies move a few pixels, so the
+     * array arrives almost in order and this costs O(n + inversions) where the
+     * merge sort always costs O(n log n).
+     *
+     * It gives up on an array that turns out to be badly out of order — a first
+     * sort, or one after bodies have been teleported — where insertion sort
+     * degrades to O(n^2) and the merge sort is far better. The array is left as
+     * a valid permutation either way, and this sort is stable, so the merge
+     * sort can simply take over.
+     *
+     * @param a The array of bodies to sort.
+     * @return Whether the array is now sorted; false means it was too
+     *         disordered and the merge sort should run instead.
+     */
+    static function insertionSort(a:Array<Body>):Bool {
+
+        //  Enough shifts to handle an array that is merely a bit out of order,
+        //  and few enough that giving up costs much less than the merge sort
+        var budget = a.length * 8;
+
+        for (i in 1...a.length) {
+            var v = a.unsafeGet(i);
+            var j = i - 1;
+
+            while (j >= 0 && a.unsafeGet(j).y > v.y) {
+                a.unsafeSet(j + 1, a.unsafeGet(j));
+                j--;
+                budget--;
+            }
+
+            //  Always complete the insertion, so the array stays a permutation
+            //  of what it was even when the budget has run out
+            a.unsafeSet(j + 1, v);
+
+            if (budget < 0) {
+                return false;
+            }
+        }
+
+        return true;
+
     }
 
     static function rec(a:Array<Body>, from:Int, to:Int) {
@@ -462,7 +605,54 @@ class SortBodiesBottomTop {
      * @param a The array of bodies to sort.
      */
     static inline public function sort(a:Array<Body>) {
-        rec(a, 0, a.length);
+        if (!insertionSort(a)) {
+            rec(a, 0, a.length);
+        }
+    }
+
+    /**
+     * Stable insertion sort, used because a group being re-sorted every frame
+     * has barely changed since the last one: bodies move a few pixels, so the
+     * array arrives almost in order and this costs O(n + inversions) where the
+     * merge sort always costs O(n log n).
+     *
+     * It gives up on an array that turns out to be badly out of order — a first
+     * sort, or one after bodies have been teleported — where insertion sort
+     * degrades to O(n^2) and the merge sort is far better. The array is left as
+     * a valid permutation either way, and this sort is stable, so the merge
+     * sort can simply take over.
+     *
+     * @param a The array of bodies to sort.
+     * @return Whether the array is now sorted; false means it was too
+     *         disordered and the merge sort should run instead.
+     */
+    static function insertionSort(a:Array<Body>):Bool {
+
+        //  Enough shifts to handle an array that is merely a bit out of order,
+        //  and few enough that giving up costs much less than the merge sort
+        var budget = a.length * 8;
+
+        for (i in 1...a.length) {
+            var v = a.unsafeGet(i);
+            var j = i - 1;
+
+            while (j >= 0 && a.unsafeGet(j).y < v.y) {
+                a.unsafeSet(j + 1, a.unsafeGet(j));
+                j--;
+                budget--;
+            }
+
+            //  Always complete the insertion, so the array stays a permutation
+            //  of what it was even when the budget has run out
+            a.unsafeSet(j + 1, v);
+
+            if (budget < 0) {
+                return false;
+            }
+        }
+
+        return true;
+
     }
 
     static function rec(a:Array<Body>, from:Int, to:Int) {

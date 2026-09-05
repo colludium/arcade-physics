@@ -130,7 +130,7 @@ class World {
         }
         // If something found, reset the quad tree and use it
         else {
-            quadTree.clear();
+            //  reset() already does what clear() does
             quadTree.reset(boundsX, boundsY, boundsWidth, boundsHeight, maxObjects, maxLevels);
         }
 
@@ -185,7 +185,9 @@ class World {
     inline public function updateMotion(body:Body):Void
     {
 
-        if (body.allowRotation)
+        //  computeVelocity would return zero for a body with no angular motion,
+        //  and most bodies have none
+        if (body.allowRotation && (body.angularVelocity != 0 || body.angularAcceleration != 0))
         {
             var velocityDelta = computeVelocity(0, body, body.angularVelocity, body.angularAcceleration, body.angularDrag, body.maxAngularVelocity) - body.angularVelocity;
             body.angularVelocity += velocityDelta;
@@ -278,23 +280,27 @@ class World {
 
     /** No sweep is possible: the group is not sorted on a usable axis. */
     static inline var SWEEP_NONE:Int = 0;
-    /** The group is sorted by ascending x, so the sweep uses left/right extents. */
+    /** Sorted by ascending x. */
     static inline var SWEEP_X:Int = 1;
-    /** The group is sorted by ascending y, so the sweep uses top/bottom extents. */
+    /** Sorted by ascending y. */
     static inline var SWEEP_Y:Int = 2;
+    /** Sorted by descending x. */
+    static inline var SWEEP_X_DESC:Int = 3;
+    /** Sorted by descending y. */
+    static inline var SWEEP_Y_DESC:Int = 4;
 
     /**
-     * Works out whether the pair loops can early-out on this group's ordering.
+     * Works out whether the pair loops can early-out on this group's ordering,
+     * and along which axis.
      *
-     * A group sorted by ascending x (or y) lets the inner loop stop at the
-     * first body that starts beyond the current body's far edge: every body
-     * after it starts even further along and cannot overlap either. The
-     * descending orders (`RIGHT_LEFT`, `BOTTOM_TOP`) are sorted by the near
-     * edge but would need to break on the far edge, which is not monotonic when
-     * bodies have different sizes, so they keep the full loop.
+     * Sorting orders bodies by their near edge, so a loop can stop as soon as
+     * the ordering guarantees nothing further can reach back to the current
+     * body. Ascending orders get that from the near edge alone; descending
+     * orders need the group's widest body as well, which `Group.markSortedBy`
+     * records.
      *
      * @param group The group about to be iterated.
-     * @return One of `SWEEP_NONE`, `SWEEP_X` or `SWEEP_Y`.
+     * @return One of the `SWEEP_` constants.
      */
     inline function sweepAxis(group:Group):Int {
 
@@ -306,32 +312,125 @@ class World {
         return switch direction {
             case SortDirection.LEFT_RIGHT: SWEEP_X;
             case SortDirection.TOP_BOTTOM: SWEEP_Y;
+            case SortDirection.RIGHT_LEFT: SWEEP_X_DESC;
+            case SortDirection.BOTTOM_TOP: SWEEP_Y_DESC;
             default: SWEEP_NONE;
         }
 
     }
 
-    /**
-     * The coordinate at which a body starts along the sweep axis.
-     */
+    /** Whether this sweep axis is ordered by decreasing coordinate. */
+    inline function sweepDescending(axis:Int):Bool {
+
+        return axis == SWEEP_X_DESC || axis == SWEEP_Y_DESC;
+
+    }
+
+    /** The sort key of a body: the coordinate the group was ordered by. */
     inline function sweepNear(body:Body, axis:Int):Float {
 
-        return axis == SWEEP_X ? body.x : body.y;
+        return (axis == SWEEP_X || axis == SWEEP_X_DESC) ? body.x : body.y;
+
+    }
+
+    /** The size of a body along the sweep axis. */
+    inline function sweepSize(body:Body, axis:Int):Float {
+
+        return (axis == SWEEP_X || axis == SWEEP_X_DESC) ? body.width : body.height;
+
+    }
+
+    /** The widest (or tallest) body in the group, along the sweep axis. */
+    inline function sweepMaxSize(group:Group, axis:Int):Float {
+
+        return (axis == SWEEP_X || axis == SWEEP_X_DESC) ? group.maxBodyWidth : group.maxBodyHeight;
 
     }
 
     /**
-     * The coordinate at which a body ends along the sweep axis, padded by
-     * `overlapBias`.
+     * Whether `body2`, and every body after it in this ordering, is too far
+     * along the axis to overlap `body1`.
      *
-     * The padding covers bodies that separation has nudged out of order since
-     * the group was sorted, and circle bodies whose `halfWidth` was floored.
+     * Ascending: `body2` starts past where `body1` ends, and later bodies start
+     * later still. Descending: `body2` ends before `body1` starts, and later
+     * bodies are further back, so not even the widest of them can reach.
+     *
+     * `overlapBias` pads both, covering bodies that separation has nudged out
+     * of order since the sort and circle bodies whose `halfWidth` was floored.
      */
-    inline function sweepFar(body:Body, axis:Int):Float {
+    inline function sweepPastEnd(body1:Body, body2:Body, axis:Int, maxSize:Float):Bool {
 
-        return axis == SWEEP_X
-            ? body.x + body.width + overlapBias
-            : body.y + body.height + overlapBias;
+        return sweepDescending(axis)
+            ? sweepNear(body2, axis) + maxSize + overlapBias <= sweepNear(body1, axis)
+            : sweepNear(body2, axis) >= sweepNear(body1, axis) + sweepSize(body1, axis) + overlapBias;
+
+    }
+
+    /**
+     * Whether `body2` is behind `body1` along the axis and can be stepped over
+     * for good, because every later `body1` is further along still.
+     */
+    inline function sweepBeforeStart(body1:Body, body2:Body, axis:Int):Bool {
+
+        return sweepDescending(axis)
+            ? sweepNear(body2, axis) >= sweepNear(body1, axis) + sweepSize(body1, axis) + overlapBias
+            : sweepNear(body2, axis) + sweepSize(body2, axis) + overlapBias <= sweepNear(body1, axis);
+
+    }
+
+    /**
+     * The first index in a sorted group that could still reach a body starting
+     * at `near1`. Everything before it is behind the query for good.
+     */
+    function sweepStartIndex(objects:Array<Body>, axis:Int, near1:Float, size1:Float, maxSize:Float):Int {
+
+        var lo = 0;
+        var hi = objects.length;
+
+        if (sweepDescending(axis)) {
+            var limit = near1 + size1 + overlapBias;
+            while (lo < hi) {
+                var mid = (lo + hi) >> 1;
+                if (sweepNear(objects.unsafeGet(mid), axis) >= limit) lo = mid + 1 else hi = mid;
+            }
+        }
+        else {
+            var limit = near1 - maxSize - overlapBias;
+            while (lo < hi) {
+                var mid = (lo + hi) >> 1;
+                if (sweepNear(objects.unsafeGet(mid), axis) <= limit) lo = mid + 1 else hi = mid;
+            }
+        }
+
+        return lo;
+
+    }
+
+    /**
+     * The index past which nothing in a sorted group can reach a body starting
+     * at `near1`.
+     */
+    function sweepEndIndex(objects:Array<Body>, axis:Int, near1:Float, size1:Float, maxSize:Float, from:Int):Int {
+
+        var lo = from;
+        var hi = objects.length;
+
+        if (sweepDescending(axis)) {
+            var limit = near1 - maxSize - overlapBias;
+            while (lo < hi) {
+                var mid = (lo + hi) >> 1;
+                if (sweepNear(objects.unsafeGet(mid), axis) > limit) lo = mid + 1 else hi = mid;
+            }
+        }
+        else {
+            var limit = near1 + size1 + overlapBias;
+            while (lo < hi) {
+                var mid = (lo + hi) >> 1;
+                if (sweepNear(objects.unsafeGet(mid), axis) < limit) lo = mid + 1 else hi = mid;
+            }
+        }
+
+        return lo;
 
     }
 
@@ -407,26 +506,24 @@ class World {
         var objects1 = group1.objects;
         var objects2 = group2.objects;
         var axis = sweepAxis(group1) == sweepAxis(group2) ? sweepAxis(group1) : SWEEP_NONE;
+        var maxSize = axis != SWEEP_NONE ? sweepMaxSize(group2, axis) : 0.0;
         var start = 0;
 
         for (i in 0...objects1.length) {
             var body1 = objects1.unsafeGet(i);
 
-            //  Both groups are sorted the same way, so bodies that finish
-            //  before this one starts are behind us for good
+            //  Both groups are sorted the same way, so a body already behind
+            //  this one is behind every later one too
             if (axis != SWEEP_NONE) {
-                var near1 = sweepNear(body1, axis);
-                while (start < objects2.length && sweepFar(objects2.unsafeGet(start), axis) <= near1) {
+                while (start < objects2.length && sweepBeforeStart(body1, objects2.unsafeGet(start), axis)) {
                     start++;
                 }
             }
 
-            var far1 = sweepFar(body1, axis);
-
             for (j in start...objects2.length) {
                 var body2 = objects2.unsafeGet(j);
 
-                if (axis != SWEEP_NONE && sweepNear(body2, axis) >= far1) break;
+                if (axis != SWEEP_NONE && sweepPastEnd(body1, body2, axis, maxSize)) break;
 
                 if (body1 != body2) {
                     if (separate(body1, body2, processCallback, true))
@@ -456,17 +553,17 @@ class World {
 
         var objects = group.objects;
         var axis = sweepAxis(group);
+        var maxSize = axis != SWEEP_NONE ? sweepMaxSize(group, axis) : 0.0;
 
         for (i in 0...objects.length) {
             var body1 = objects.unsafeGet(i);
-            var far1 = sweepFar(body1, axis);
 
             //  Each unordered pair is visited once, as (body1, body2) with
             //  body1 earlier in the group
             for (j in (i + 1)...objects.length) {
                 var body2 = objects.unsafeGet(j);
 
-                if (axis != SWEEP_NONE && sweepNear(body2, axis) >= far1) break;
+                if (axis != SWEEP_NONE && sweepPastEnd(body1, body2, axis, maxSize)) break;
 
                 if (body1 != body2) {
                     if (separate(body1, body2, processCallback, true))
@@ -496,7 +593,9 @@ class World {
 
         var objects = group.objects;
 
+        var usedTree = false;
         if (!skipQuadTree && !body.skipQuadTree && objects.length > maxObjectsWithoutQuadTree && group.useQuadTreeForNextQuery()) {
+            usedTree = true;
             var quadTree = group.getQuadTree(boundsX, boundsY, boundsWidth, boundsHeight, maxObjects, maxLevels);
             //  Padded by overlapBias because separation may have nudged bodies
             //  since the tree was built for this frame
@@ -506,7 +605,22 @@ class World {
             );
         }
 
-        for (i in 0...objects.length) {
+        //  The tree hands back an unordered subset, but the group's own array is
+        //  sorted, so the scan can be narrowed to the stretch that can reach us
+        var from = 0;
+        var to = objects.length;
+        if (!usedTree) {
+            var axis = sweepAxis(group);
+            if (axis != SWEEP_NONE) {
+                var maxSize = sweepMaxSize(group, axis);
+                var near = sweepNear(body, axis);
+                var size = sweepSize(body, axis);
+                from = sweepStartIndex(objects, axis, near, size, maxSize);
+                to = sweepEndIndex(objects, axis, near, size, maxSize, from);
+            }
+        }
+
+        for (i in from...to) {
             var body2 = objects.unsafeGet(i);
 
             if (body != body2) {
@@ -601,24 +715,24 @@ class World {
         var objects1 = group1.objects;
         var objects2 = group2.objects;
         var axis = sweepAxis(group1) == sweepAxis(group2) ? sweepAxis(group1) : SWEEP_NONE;
+        var maxSize = axis != SWEEP_NONE ? sweepMaxSize(group2, axis) : 0.0;
         var start = 0;
 
         for (i in 0...objects1.length) {
             var body1 = objects1.unsafeGet(i);
 
+            //  Both groups are sorted the same way, so a body already behind
+            //  this one is behind every later one too
             if (axis != SWEEP_NONE) {
-                var near1 = sweepNear(body1, axis);
-                while (start < objects2.length && sweepFar(objects2.unsafeGet(start), axis) <= near1) {
+                while (start < objects2.length && sweepBeforeStart(body1, objects2.unsafeGet(start), axis)) {
                     start++;
                 }
             }
 
-            var far1 = sweepFar(body1, axis);
-
             for (j in start...objects2.length) {
                 var body2 = objects2.unsafeGet(j);
 
-                if (axis != SWEEP_NONE && sweepNear(body2, axis) >= far1) break;
+                if (axis != SWEEP_NONE && sweepPastEnd(body1, body2, axis, maxSize)) break;
 
                 if (body1 != body2) {
                     if (separate(body1, body2, processCallback, false))
@@ -648,15 +762,15 @@ class World {
 
         var objects = group.objects;
         var axis = sweepAxis(group);
+        var maxSize = axis != SWEEP_NONE ? sweepMaxSize(group, axis) : 0.0;
 
         for (i in 0...objects.length) {
             var body1 = objects.unsafeGet(i);
-            var far1 = sweepFar(body1, axis);
 
             for (j in (i + 1)...objects.length) {
                 var body2 = objects.unsafeGet(j);
 
-                if (axis != SWEEP_NONE && sweepNear(body2, axis) >= far1) break;
+                if (axis != SWEEP_NONE && sweepPastEnd(body1, body2, axis, maxSize)) break;
 
                 if (body1 != body2) {
                     if (separate(body1, body2, processCallback, false))
@@ -686,7 +800,9 @@ class World {
 
         var objects = group.objects;
 
+        var usedTree = false;
         if (!skipQuadTree && !body.skipQuadTree && objects.length > maxObjectsWithoutQuadTree && group.useQuadTreeForNextQuery()) {
+            usedTree = true;
             var quadTree = group.getQuadTree(boundsX, boundsY, boundsWidth, boundsHeight, maxObjects, maxLevels);
             //  Padded by overlapBias because separation may have nudged bodies
             //  since the tree was built for this frame
@@ -696,7 +812,22 @@ class World {
             );
         }
 
-        for (i in 0...objects.length) {
+        //  The tree hands back an unordered subset, but the group's own array is
+        //  sorted, so the scan can be narrowed to the stretch that can reach us
+        var from = 0;
+        var to = objects.length;
+        if (!usedTree) {
+            var axis = sweepAxis(group);
+            if (axis != SWEEP_NONE) {
+                var maxSize = sweepMaxSize(group, axis);
+                var near = sweepNear(body, axis);
+                var size = sweepSize(body, axis);
+                from = sweepStartIndex(objects, axis, near, size, maxSize);
+                to = sweepEndIndex(objects, axis, near, size, maxSize, from);
+            }
+        }
+
+        for (i in from...to) {
             var body2 = objects.unsafeGet(i);
 
             if (body != body2) {

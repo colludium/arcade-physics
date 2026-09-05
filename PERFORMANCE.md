@@ -10,7 +10,13 @@ against the pre-optimisation library using the *same* benchmark harness, so the
 comparison is like for like. Absolute values depend on target and machine; the
 ratios held on the Haxe interpreter too.
 
-## Results
+The file covers two rounds of work. Sections 1-4 are the first round, measured
+against the original library. Sections 5-7 are a second round, measured against
+the state after the first; those numbers come from focused probes rather than
+the full suite, for the reason given under
+[A note on measuring this](#a-note-on-measuring-this).
+
+## Results (first round)
 
 | Scenario | Before | After | |
 |---|---|---|---|
@@ -103,9 +109,13 @@ after it can overlap either. Group vs group also advances a start index past
 bodies that finish before the current one begins. Self-collision iterates
 `j` from `i + 1`.
 
-The descending orders (`RIGHT_LEFT`, `BOTTOM_TOP`) keep the full loop. They are
-sorted by the near edge but would need to break on the far edge, which is not
-monotonic when bodies have different sizes — the early exit would be unsound.
+All four sort directions get the early exit. Ascending orders break on the near
+edge alone. Descending orders are ordered by decreasing near edge, so they break
+once a body ends before the current one starts — which needs a bound on how far
+back a body can reach, provided by the widest body in the group that
+`Group.markSortedBy` records. Adding the descending case took a 400-body
+`RIGHT_LEFT` self-collision from 0.9946 ms to 0.0337 ms a frame, **29.5x**: it
+had been running the full n² loop.
 
 The break is padded by `overlapBias`, which covers bodies that separation has
 nudged out of order since the sort, and circle bodies whose `halfWidth` was
@@ -136,8 +146,60 @@ remain assignable, so the public API is unchanged.
 third of the entire integration cost was maintaining two values most games never
 read.
 
-## 5. Smaller changes
+## 5. An adaptive sort
 
+**Was.** A group that moves is re-sorted every frame by a merge sort, which
+costs O(n log n) whatever the input. But a frame only shifts bodies a few
+pixels, so the array arrives almost in order: a moving group of 1000 bodies
+averages about 195 adjacent inversions out of 1000.
+
+**Now.** `sort` runs a stable insertion sort first, costing O(n + inversions),
+and falls back to the merge sort when the array turns out to be badly
+disordered. The fallback matters: insertion sort is 7.5x *slower* than the merge
+sort on a freshly shuffled 5000-body array (21 ms — a dropped frame). A shift
+budget of 8n triggers the handover. The insertion sort always completes the
+insertion in progress before giving up, so the array stays a valid permutation,
+and because it is stable the merge sort can simply take over.
+
+**Result.** The sort itself is 5.7x faster at n=200, 3.3x at n=1000, 1.8x at
+n=5000. On whole frames of a moving group being collided:
+
+| group | before | after | |
+|---|---|---|---|
+| 500 | 0.0313 ms | 0.0246 ms | **1.27x** |
+| 2000 | 0.1884 ms | 0.1725 ms | 1.09x |
+| 5000 | 0.7082 ms | 0.6588 ms | 1.07x |
+
+Every paired run favoured it. `sort 1000 already sorted bodies` in the suite
+went from 0.0167 ms to 0.0040 ms.
+
+## 6. Narrowing the body vs group scan
+
+**Was.** When the tree does not answer a query — the first query of a frame, a
+small group, or `skipQuadTree` — the whole group was scanned linearly, even
+though it had just been sorted.
+
+**Now.** Two binary searches bound the stretch of the sorted array that can
+reach the query body, using the group's widest body for the lower bound. The
+tree path is unaffected, because what it hands back is an unordered subset.
+
+**Result.** One body against a sorted group with no tree: 0.2063 ms -> 0.1361 ms
+at n=2000, and 0.0310 ms -> 0.0204 ms at n=500. Both **1.5x**.
+
+## 7. Smaller changes
+
+- **`Group.getQuadTree` and `World.getQuadTree` called `clear()` then
+  `reset()`.** `reset()` already recycles the child nodes and empties both
+  arrays, so `clear()` was pure duplicate work on every rebuild. The suite's
+  `acquire and release a pooled QuadTree 1000x` went from 0.0607 ms to
+  0.0318 ms, **1.91x**.
+- **`updateMotion` integrated angular motion for every body every frame**, even
+  when `angularVelocity` and `angularAcceleration` are both zero and the result
+  is provably zero. Now skipped.
+- **`deltaAbsX`/`deltaAbsY` evaluated their delta twice**, and `postUpdate`
+  evaluated each of `deltaX`/`deltaY` three times. Each is computed once now.
+  These three are below the noise floor individually — redundancy removals
+  rather than measurable wins.
 - **`unsafeGet` on the group loops.** `collideGroupVsGroup`,
   `collideGroupVsItself` and `collideBodyVsGroup` now use
   `Extensions.unsafeGet` like the rest of the library. Free on JS, real on
@@ -155,13 +217,17 @@ read.
 
 ## What was deliberately not changed
 
-- **`SortBodies.hx` is still four copies of the same merge sort.** The four
-  classes are byte-identical apart from their `cmp` function, which exists so
-  each comparison inlines into the sort. Replacing them with one implementation
-  taking a comparator would either lose that inlining or require a build macro,
-  adding complexity to a library that has no dependencies — for no measured
-  speedup, since sorting is now cached and rarely on the hot path. A comment at
-  the top of the file records that a fix has to be applied to all four.
+- **`SortBodies.hx` is still four copies of the same sort.** The four classes
+  are identical apart from their comparison, which exists so it inlines into the
+  sort. Replacing them with one implementation taking a comparator would either
+  lose that inlining or require a build macro, adding complexity to a library
+  that has no dependencies. The adaptive sort had to be written into all four,
+  which is exactly the maintenance cost the comment at the top of the file warns
+  about — but the inlining is worth more than the duplication costs, and sorting
+  is squarely on the hot path.
+- **Struct-of-arrays for the hot fields, an incremental sort order, and an
+  incremental grid broadphase** remain unexplored. All three are large, and none
+  has been measured, so they are hypotheses rather than recommendations.
 - **`separate` calling `intersects` twice** is not redundant: the second call
   happens after the first axis has moved the bodies, and its answer decides
   whether the second axis needs separating.

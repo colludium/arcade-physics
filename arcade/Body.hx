@@ -708,28 +708,31 @@ class Body implements Collidable
 
             this.dirty = false;
 
-            if (this.deltaX() < 0)
+            var frameDX = this.deltaX();
+            var frameDY = this.deltaY();
+
+            if (frameDX < 0)
             {
                 this.facing = Direction.LEFT;
             }
-            else if (this.deltaX() > 0)
+            else if (frameDX > 0)
             {
                 this.facing = Direction.RIGHT;
             }
 
-            if (this.deltaY() < 0)
+            if (frameDY < 0)
             {
                 this.facing = Direction.UP;
             }
-            else if (this.deltaY() > 0)
+            else if (frameDY > 0)
             {
                 this.facing = Direction.DOWN;
             }
 
             if (this.moves)
             {
-                this._dx = this.deltaX();
-                this._dy = this.deltaY();
+                this._dx = frameDX;
+                this._dy = frameDY;
 
                 if (this.maxDeltaX != 0 && this._dx != 0)
                 {
@@ -1138,7 +1141,8 @@ class Body implements Collidable
     inline public function deltaAbsX():Float
     {
 
-        return (this.deltaX() > 0 ? this.deltaX() : -this.deltaX());
+        var delta = this.deltaX();
+        return delta > 0 ? delta : -delta;
 
     }
 
@@ -1150,7 +1154,8 @@ class Body implements Collidable
     inline public function deltaAbsY():Float
     {
 
-        return (this.deltaY() > 0 ? this.deltaY() : -this.deltaY());
+        var delta = this.deltaY();
+        return delta > 0 ? delta : -delta;
 
     }
 

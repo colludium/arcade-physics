@@ -837,9 +837,11 @@ enemyGroup.invalidate(); // otherwise this frame's collisions use the old positi
 ```
 
 `group vs group` and `group vs itself` do not use the tree. When the group is
-sorted `LEFT_RIGHT` or `TOP_BOTTOM` they use the sort order directly as a sweep
-and prune broadphase, stopping the inner loop at the first body that starts
-beyond the current one.
+sorted — in any of the four directions — they use that order directly as a sweep
+and prune broadphase, stopping the inner loop as soon as the ordering guarantees
+nothing further can overlap. `body vs group` does the same with a binary search
+when the tree has not answered the query. Sorting is therefore worth far more
+than processing order: with `sortDirection = NONE` every pair is checked.
 
 ### Optimization Tips
 
@@ -849,7 +851,7 @@ beyond the current one.
 4. **Immovable Objects** - Set `immovable = true` for static platforms and walls. Set `allowGravity = false` on those if your world has gravity
 5. **Follow Update Order** - Always: preUpdate → collisions → postUpdate
 6. **Batch Operations** - Process all bodies in each phase before moving to the next
-7. **Sort Your Groups** - `sortDirection` is not just about processing order: `LEFT_RIGHT` and `TOP_BOTTOM` let group collisions skip pairs that cannot overlap. `NONE` disables that and falls back to checking every pair
+7. **Sort Your Groups** - `sortDirection` is not just about processing order: any of the four directions lets group collisions skip pairs that cannot overlap. `NONE` disables that and falls back to checking every pair
 8. **Keep Static Groups Static** - A group whose bodies never move keeps its sort order and spatial index between frames. Splitting immovable level geometry into its own group is worth it for that alone
 9. **Call the Typed Methods in Hot Loops** - `world.collide()` resolves its arguments at runtime on every call. Code making many small calls can use `collideBodyVsBody`, `collideBodyVsGroup` or `collideGroupVsGroup` directly and skip the dispatch
 

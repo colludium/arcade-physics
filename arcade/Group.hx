@@ -32,6 +32,16 @@ class Group implements Collidable {
     /** How many collision queries have been made since the bodies last moved. */
     var queriesSinceInvalidate:Int = 0;
 
+    /**
+     * The widest and tallest body in this group, as of the last sort.
+     *
+     * The pair loops use this to know how far back along the sort axis a body
+     * could still reach. Sorting orders bodies by their near edge, so without a
+     * bound on size there is no safe point at which to stop looking.
+     */
+    public var maxBodyWidth(default, null):Float = 0;
+    public var maxBodyHeight(default, null):Float = 0;
+
     public function new() {
 
     }
@@ -87,9 +97,19 @@ class Group implements Collidable {
     /**
      * Records that the group has just been sorted in the given direction.
      */
-    inline public function markSortedBy(direction:SortDirection):Void {
+    public function markSortedBy(direction:SortDirection):Void {
 
         cachedSortDirection = direction;
+
+        var widest:Float = 0;
+        var tallest:Float = 0;
+        for (i in 0...objects.length) {
+            var body = objects[i];
+            if (body.width > widest) widest = body.width;
+            if (body.height > tallest) tallest = body.height;
+        }
+        maxBodyWidth = widest;
+        maxBodyHeight = tallest;
 
     }
 
@@ -115,7 +135,8 @@ class Group implements Collidable {
         }
 
         if (!cachedQuadTreeValid) {
-            cachedQuadTree.clear();
+            //  reset() already recycles the child nodes and empties the arrays,
+            //  so there is no need to clear() first
             cachedQuadTree.reset(x, y, width, height, maxObjects, maxLevels);
             cachedQuadTree.populate(objects);
             cachedQuadTreeValid = true;

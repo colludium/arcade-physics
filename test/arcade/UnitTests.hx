@@ -393,6 +393,30 @@ class UnitTests {
             Assert.equals(90.0, body.angularVelocity);
         });
 
+        Assert.test('a body with no angular motion keeps its rotation', () -> {
+            // The angular integration is skipped entirely for these bodies, so
+            // check nothing else changes as a side effect
+            final world = newWorld();
+            final body = new Body(0, 0, 10, 10, 1.5);
+            body.angularDrag = 600;
+            body.maxAngularVelocity = 10;
+            steps(world, [body], 10);
+            Assert.equals(1.5, body.rotation, 'rotation must be left alone');
+            Assert.equals(0.0, body.angularVelocity);
+        });
+
+        Assert.test('angular drag still stops a spinning body', () -> {
+            final world = newWorld();
+            final body = new Body(0, 0, 10, 10);
+            body.angularVelocity = 100;
+            body.angularDrag = 600;
+            steps(world, [body], 20);
+            Assert.equals(0.0, body.angularVelocity, 'drag should bring the spin to rest');
+            final settled = body.rotation;
+            steps(world, [body], 5);
+            Assert.equals(settled, body.rotation, 'and it should stay at rest');
+        });
+
         Assert.test('allowRotation=false freezes rotation', () -> {
             final world = newWorld();
             final body = new Body(0, 0, 10, 10);
@@ -1328,6 +1352,107 @@ class UnitTests {
             }
         });
 
+        Assert.test('a nearly sorted group sorts correctly', () -> {
+            // The insertion path: the array is already almost in order
+            final group = new Group();
+            final bodies = [];
+            for (i in 0...300) {
+                final body = new Body(i * 10, 0, 10, 10);
+                body.index = i;
+                group.add(body);
+                bodies.push(body);
+            }
+            // Nudge each body a little, as a frame of motion would
+            var state = 5;
+            for (body in bodies) {
+                state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                body.x += (state % 40) - 20;
+            }
+            group.sortLeftRight();
+            Assert.equals(300, group.objects.length, 'no body may be lost');
+            for (i in 1...group.objects.length) {
+                Assert.isTrue(group.objects[i - 1].x <= group.objects[i].x, 'must be fully ordered at $i');
+            }
+        });
+
+        Assert.test('a badly disordered group still sorts correctly', () -> {
+            // Big enough and shuffled enough to exhaust the insertion budget
+            // and hand over to the merge sort mid-way
+            final group = new Group();
+            var state = 77;
+            final seen = new Map<Int, Bool>();
+            for (i in 0...2000) {
+                state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                final body = new Body(state % 100000, 0, 10, 10);
+                body.index = i;
+                group.add(body);
+            }
+            group.sortLeftRight();
+
+            Assert.equals(2000, group.objects.length);
+            for (i in 1...group.objects.length) {
+                Assert.isTrue(group.objects[i - 1].x <= group.objects[i].x, 'must be fully ordered at $i');
+            }
+            // Every original body must still be present exactly once: bailing
+            // out mid-insertion must not drop or duplicate one
+            for (body in group.objects) {
+                Assert.isFalse(seen.exists(body.index), 'body ${body.index} appears twice');
+                seen.set(body.index, true);
+            }
+            Assert.equals(2000, Lambda.count(seen));
+        });
+
+        Assert.test('stability holds on both the insertion and merge paths', () -> {
+            for (count in [50, 2000]) {
+                final group = new Group();
+                var state = 11;
+                for (i in 0...count) {
+                    state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                    // Only a handful of distinct keys, so ties are everywhere
+                    final body = new Body(state % 5, 0, 10, 10);
+                    body.index = i;
+                    group.add(body);
+                }
+                group.sortLeftRight();
+
+                for (i in 1...group.objects.length) {
+                    final a = group.objects[i - 1];
+                    final b = group.objects[i];
+                    if (a.x == b.x) {
+                        Assert.isTrue(a.index < b.index, 'ties must keep their original order (n=$count, at $i)');
+                    }
+                }
+            }
+        });
+
+        Assert.test('every sort direction handles a disordered group', () -> {
+            for (direction in [SortDirection.LEFT_RIGHT, SortDirection.RIGHT_LEFT, SortDirection.TOP_BOTTOM, SortDirection.BOTTOM_TOP]) {
+                final world = newWorld();
+                final group = new Group();
+                var state = 909;
+                for (i in 0...1500) {
+                    state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                    group.add(new Body(state % 50000, (state >> 7) % 50000, 10, 10));
+                }
+                group.sortDirection = direction;
+                world.sort(group);
+
+                Assert.equals(1500, group.objects.length, 'direction $direction lost a body');
+                for (i in 1...group.objects.length) {
+                    final a = group.objects[i - 1];
+                    final b = group.objects[i];
+                    final ordered = switch direction {
+                        case SortDirection.LEFT_RIGHT: a.x <= b.x;
+                        case SortDirection.RIGHT_LEFT: a.x >= b.x;
+                        case SortDirection.TOP_BOTTOM: a.y <= b.y;
+                        case SortDirection.BOTTOM_TOP: a.y >= b.y;
+                        default: true;
+                    }
+                    Assert.isTrue(ordered, 'direction $direction out of order at $i');
+                }
+            }
+        });
+
         Assert.test('World.sort honours the group sort direction', () -> {
             final world = newWorld();
             final group = makeGroup([50, 10, 30], [0, 0, 0]);
@@ -1991,6 +2116,64 @@ class UnitTests {
             group.add(new Body(50, 0, 10, 10));
             world.sort(group);
             Assert.equals(50.0, group.objects[0].x, 'adding a body must force a re-sort');
+        });
+
+        Assert.test('body vs group finds the same bodies in every sort direction', () -> {
+            for (seed in [31, 32]) {
+                final bodies = scene(80, seed);
+                final probe = new Body(300, 250, 90, 90);
+                probe.velocityX = 1;
+
+                function run(direction:SortDirection, skipTree:Bool):Array<String> {
+                    final world = newWorld();
+                    world.skipQuadTree = skipTree;
+                    world.maxObjectsWithoutQuadTree = 4;
+                    final group = new Group();
+                    for (i in 0...bodies.length) {
+                        bodies[i].index = i;
+                        group.add(bodies[i]);
+                    }
+                    group.sortDirection = direction;
+                    final found = [];
+                    step(world, [probe].concat(bodies), () -> {
+                        world.overlap(probe, group, (_, other) -> found.push('' + other.index));
+                    });
+                    found.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+                    return found;
+                }
+
+                // Unsorted and unindexed is the reference
+                final reference = run(SortDirection.NONE, true);
+                for (direction in [SortDirection.LEFT_RIGHT, SortDirection.RIGHT_LEFT, SortDirection.TOP_BOTTOM, SortDirection.BOTTOM_TOP]) {
+                    sameLists(reference, run(direction, true), 'seed $seed direction $direction');
+                }
+            }
+        });
+
+        Assert.test('body vs group does not skip a wide body', () -> {
+            // The narrowed scan must still reach a body that starts far back
+            // along the axis but is wide enough to overlap the query
+            for (direction in [SortDirection.LEFT_RIGHT, SortDirection.RIGHT_LEFT]) {
+                final world = newWorld();
+                world.skipQuadTree = true;
+                final group = new Group();
+                group.sortDirection = direction;
+
+                final wide = new Body(0, 100, 400, 20);
+                wide.allowGravity = false;
+                group.add(wide);
+                for (i in 0...10) {
+                    final filler = new Body(500 + i * 20, 300, 10, 10);
+                    filler.allowGravity = false;
+                    group.add(filler);
+                }
+
+                final probe = new Body(380, 100, 10, 10);
+                probe.velocityX = 1;
+                var hits = 0;
+                step(world, [probe].concat(group.objects), () -> world.overlap(probe, group, (_, _) -> hits++));
+                Assert.equals(1, hits, 'direction $direction should find the wide body');
+            }
         });
 
         Assert.test('a static group keeps its caches across frames', () -> {
