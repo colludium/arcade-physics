@@ -1907,7 +1907,9 @@ class UnitTests {
             Assert.equals(1.0, group.objects[0].x, 'invalidate forces a re-sort');
         });
 
-        Assert.test('preUpdate invalidates the caches of every group holding the body', () -> {
+        Assert.test('a body moved by its owner invalidates the caches', () -> {
+            // The integration pattern where a visual object drives the body:
+            // preUpdate is handed the owner's position, so the jump is visible
             final world = newWorld();
             final g1 = new Group();
             final g2 = new Group();
@@ -1916,6 +1918,8 @@ class UnitTests {
 
             final a = new Body(300, 0, 10, 10);
             final b = new Body(100, 0, 10, 10);
+            a.allowGravity = false;
+            b.allowGravity = false;
             for (group in [g1, g2]) {
                 group.add(a);
                 group.add(b);
@@ -1925,13 +1929,54 @@ class UnitTests {
             world.sort(g2);
             Assert.equals(b, g1.objects[0]);
 
-            // Move a to the front and run a frame: both groups must re-sort
-            a.x = 1;
-            step(world, [a, b]);
+            // The owner moves `a` to the front, and passes that in
+            a.preUpdate(world, 1, 0, a.width, a.height, 0);
+            b.preUpdate(world, b.x, b.y, b.width, b.height, 0);
+            a.postUpdate(world);
+            b.postUpdate(world);
+
             world.sort(g1);
             world.sort(g2);
             Assert.equals(a, g1.objects[0], 'g1 should have been re-sorted');
             Assert.equals(a, g2.objects[0], 'g2 should have been re-sorted');
+        });
+
+        Assert.test('assigning to body.x directly is picked up on the next frame', () -> {
+            // The caches remember where each body was when they were built, so
+            // a direct assignment is noticed even though preUpdate is handed
+            // the body's own position and sees no movement of its own
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            final a = new Body(300, 0, 10, 10);
+            final b = new Body(100, 0, 10, 10);
+            a.allowGravity = false;
+            b.allowGravity = false;
+            group.add(a);
+            group.add(b);
+
+            world.sort(group);
+            Assert.equals(b, group.objects[0]);
+
+            a.x = 1;
+            step(world, [a, b]);
+            world.sort(group);
+            Assert.equals(a, group.objects[0], 'the direct move should have invalidated the group');
+        });
+
+        Assert.test('Body.reset invalidates without needing a manual call', () -> {
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            final a = new Body(300, 0, 10, 10);
+            final b = new Body(100, 0, 10, 10);
+            group.add(a);
+            group.add(b);
+
+            world.sort(group);
+            a.reset(1, 0, 10, 10);
+            world.sort(group);
+            Assert.equals(a, group.objects[0], 'reset should invalidate the group');
         });
 
         Assert.test('adding or removing a body invalidates the caches', () -> {
@@ -1946,6 +1991,240 @@ class UnitTests {
             group.add(new Body(50, 0, 10, 10));
             world.sort(group);
             Assert.equals(50.0, group.objects[0].x, 'adding a body must force a re-sort');
+        });
+
+        Assert.test('a static group keeps its caches across frames', () -> {
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            final bodies = [];
+            for (x in [300.0, 100.0, 200.0]) {
+                final body = new Body(x, 0, 10, 10);
+                body.allowGravity = false;
+                group.add(body);
+                bodies.push(body);
+            }
+
+            world.sort(group);
+            Assert.equals(100.0, group.objects[0].x);
+
+            // Nothing moves, so none of these frames should invalidate
+            steps(world, bodies, 5);
+
+            // A manual move with no invalidate: if the cache had been dropped
+            // during those frames, this would be picked up by the next sort
+            group.objects[2].x = 1;
+            world.sort(group);
+            Assert.equals(100.0, group.objects[0].x, 'the cache should have survived 5 static frames');
+        });
+
+        Assert.test('a moving body still invalidates its groups every frame', () -> {
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            final still = new Body(100, 0, 10, 10);
+            still.allowGravity = false;
+            final mover = new Body(300, 0, 10, 10);
+            mover.velocityX = -600;
+            group.add(still);
+            group.add(mover);
+
+            world.sort(group);
+            Assert.equals(still, group.objects[0]);
+
+            // The mover crosses to the left of the still body
+            steps(world, [still, mover], 30);
+            world.sort(group);
+            Assert.equals(mover, group.objects[0], 'a moving body must keep its group re-sorting');
+        });
+
+        Assert.test('a body displaced by separation after the tree was built is not lost', () -> {
+            // The hazard: a group's spatial index is built early in the
+            // collision phase, then separation moves one of its bodies later in
+            // that same phase. If the next frame only asks "did this body move
+            // under its own power", the answer is no — it is sitting still where
+            // separation left it — and the index stays stale forever.
+            final world = newWorld();
+            world.maxObjectsWithoutQuadTree = 4;
+            world.maxObjects = 2; // force the tree to actually subdivide
+
+            // Spread through the same quadrant as the runner, so the tree
+            // actually subdivides there and a stale entry lands in the wrong node
+            final group = new Group();
+            final filler = [];
+            for (i in 0...8) {
+                final body = new Body(10 + i * 45, 30 + (i % 3) * 60, 12, 12);
+                body.allowGravity = false;
+                group.add(body);
+                filler.push(body);
+            }
+
+            // Fast enough that the overlap bias allows a large push back, and
+            // bounceX of 0 means it comes to a dead stop
+            final runner = new Body(100, 100, 20, 20);
+            runner.allowGravity = false;
+            runner.velocityX = 9000;
+            runner.bounceX = 0;
+            group.add(runner);
+
+            final wall = new Body(150, 100, 200, 20);
+            wall.immovable = true;
+            wall.allowGravity = false;
+
+            final all = filler.concat([runner, wall]);
+
+            step(world, all, () -> {
+                // Two queries so the tree gets built, at the pre-separation
+                // positions, and only then is the runner pushed back
+                world.overlap(runner, group);
+                world.overlap(runner, group);
+                world.collide(runner, wall);
+            });
+
+            final restingX = runner.x;
+            Assert.equals(0.0, runner.velocityX, 'the runner should have stopped dead');
+            Assert.greater(60, 250 - restingX, 'the runner should have been pushed back a long way, ended at $restingX');
+
+            // Next frame nothing moves under its own power, but a query where
+            // the runner actually is must still find it
+            var found = 0;
+            final probe = new Body(restingX + 2, 102, 6, 6);
+            probe.velocityX = 1;
+            step(world, all.concat([probe]), () -> {
+                world.overlap(probe, group);
+                world.overlap(probe, group, (_, other) -> {
+                    if (other == runner) found++;
+                });
+            });
+            Assert.equals(1, found, 'the displaced body must be found where it now is');
+        });
+
+        Assert.test('resizing a body invalidates its groups', () -> {
+            final world = newWorld();
+            final group = new Group();
+            group.sortDirection = SortDirection.LEFT_RIGHT;
+            final a = new Body(100, 0, 10, 10);
+            final b = new Body(200, 0, 10, 10);
+            a.allowGravity = false;
+            b.allowGravity = false;
+            group.add(a);
+            group.add(b);
+
+            world.sort(group);
+
+            // Grow `a` so it now reaches `b`, via the preUpdate size argument
+            a.preUpdate(world, a.x, a.y, 150, 10, 0);
+            b.preUpdate(world, b.x, b.y, b.width, b.height, 0);
+            var hits = 0;
+            world.overlap(group, (_, _) -> hits++);
+            a.postUpdate(world);
+            b.postUpdate(world);
+            Assert.equals(1, hits, 'the resized body should now overlap its neighbour');
+        });
+
+        Assert.test('the sweep stays correct over many frames of motion', () -> {
+            // Overlap only, so both runs follow identical trajectories and any
+            // difference is the broadphase dropping a pair
+            function run(direction:SortDirection):Array<String> {
+                final world = newWorld();
+                world.skipQuadTree = true;
+                world.gravityY = 300;
+
+                var state = 4242;
+                function rnd():Float {
+                    state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                    return state / 0x3FFFFFFF;
+                }
+
+                final group = new Group();
+                final bodies = [];
+                for (i in 0...40) {
+                    final body = new Body(rnd() * 700, rnd() * 500, 20 + rnd() * 40, 20 + rnd() * 40);
+                    body.velocityX = rnd() * 200 - 100;
+                    body.velocityY = rnd() * 200 - 100;
+                    body.bounceX = 1;
+                    body.bounceY = 1;
+                    body.collideWorldBounds = true;
+                    body.index = i;
+                    group.add(body);
+                    bodies.push(body);
+                }
+                group.sortDirection = direction;
+
+                final log = [];
+                for (frame in 0...40) {
+                    step(world, bodies, () -> world.overlap(group, (b1, b2) -> {
+                        final lo = b1.index < b2.index ? b1.index : b2.index;
+                        final hi = b1.index < b2.index ? b2.index : b1.index;
+                        log.push('$frame:$lo-$hi');
+                    }));
+                }
+                log.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+                return log;
+            }
+
+            final reference = run(SortDirection.NONE);
+            Assert.greater(0, reference.length, 'the scene should produce overlaps');
+            sameLists(reference, run(SortDirection.LEFT_RIGHT), 'swept');
+        });
+
+        Assert.test('the cached tree stays correct over many frames with separation', () -> {
+            // Both runs sort the same way, so bodies are separated in the same
+            // order and follow identical trajectories. The only difference is
+            // whether queries go through the group's cached spatial index, so
+            // a stale tree shows up as a missing pair.
+            function run(skipTree:Bool):Array<String> {
+                final world = newWorld();
+                world.skipQuadTree = skipTree;
+                world.maxObjectsWithoutQuadTree = 4;
+                world.gravityY = 300;
+
+                var state = 909;
+                function rnd():Float {
+                    state = (state * 1103515245 + 12345) & 0x3FFFFFFF;
+                    return state / 0x3FFFFFFF;
+                }
+
+                final group = new Group();
+                final targets = [];
+                for (i in 0...40) {
+                    final body = new Body(rnd() * 700, rnd() * 500, 30 + rnd() * 30, 30 + rnd() * 30);
+                    body.allowGravity = false;
+                    body.index = i;
+                    group.add(body);
+                    targets.push(body);
+                }
+                group.sortDirection = SortDirection.LEFT_RIGHT;
+
+                final probes = [];
+                for (i in 0...5) {
+                    final probe = new Body(rnd() * 700, rnd() * 500, 24, 24);
+                    probe.velocityX = rnd() * 300 - 150;
+                    probe.velocityY = rnd() * 300 - 150;
+                    probe.bounceX = 1;
+                    probe.bounceY = 1;
+                    probe.collideWorldBounds = true;
+                    probe.index = 1000 + i;
+                    probes.push(probe);
+                }
+
+                final all = targets.concat(probes);
+                final log = [];
+                for (frame in 0...40) {
+                    step(world, all, () -> {
+                        for (probe in probes) {
+                            // Separation moves the group's bodies, so the tree
+                            // built earlier this frame must not go stale
+                            world.collide(probe, group, (b1, b2) -> log.push('$frame:${b1.index}-${b2.index}'));
+                        }
+                    });
+                }
+                return log;
+            }
+
+            final reference = run(true);
+            Assert.greater(0, reference.length, 'the scene should produce collisions');
+            sameLists(reference, run(false), 'cached tree');
         });
 
         Assert.test('a wide body is not skipped by the sweep', () -> {

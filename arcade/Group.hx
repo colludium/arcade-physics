@@ -64,7 +64,12 @@ class Group implements Collidable {
      */
     inline public function useQuadTreeForNextQuery():Bool {
 
-        queriesSinceInvalidate++;
+        //  Capped rather than free running: a static group can go many frames
+        //  without being invalidated, and the counter only ever needs to
+        //  distinguish "first query" from "not the first query"
+        if (queriesSinceInvalidate <= 1) {
+            queriesSinceInvalidate++;
+        }
         return queriesSinceInvalidate > 1;
 
     }

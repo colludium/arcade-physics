@@ -51,12 +51,31 @@ now earns its keep: 60 body-vs-group calls against one 200-body group went from
 2.12 ms to 0.19 ms, and with sorting off the tree beats the scan roughly 2:1
 (0.12 ms vs 0.22 ms), which it never did before.
 
-**Cache invalidation.** The group's tree and sort order are invalidated by
-`Body.preUpdate`, by `Body.reset`, and by `Group.add`/`remove`. That covers the
-documented update cycle. Moving a body directly without calling `preUpdate`
-needs an explicit `group.invalidate()`; this is called out in the README.
-Retrieve queries are padded by `overlapBias` so that a body nudged by separation
-after the tree was built is still found.
+**Cache invalidation.** `Body.preUpdate` compares the body's position against
+where it was at the end of the previous `preUpdate` and only invalidates the
+groups holding it if it has actually moved. `Body.reset`, `Body.setCircle`, a
+size change and `Group.add`/`remove` invalidate directly. Retrieve queries are
+padded by `overlapBias` so that a body nudged by separation after the tree was
+built is still found within the frame.
+
+Comparing positions rather than asking "did this body move under its own power"
+matters: separation, world bounds clamping and direct assignment to `body.x` all
+move a body without it having any velocity, and all three are caught. It also
+has to be a comparison against the *previous frame*, not against the start of
+this `preUpdate` — separation happens after `preUpdate` has run, so a body can
+sit still all of the next frame in a place the caches know nothing about.
+
+Doing this from `World.separate` instead, so that `Body` needs no extra fields,
+was tried and is much worse: separation runs *during* the collision phase, so
+invalidating there tears the caches down mid-frame and they get rebuilt several
+times a frame instead of once. The platformer scenario measured 3.3x slower.
+
+**Result.** A group of static level geometry now keeps its tree and its sort
+order for as long as nothing in it moves. Measured on 200 static platforms with
+60 bodies colliding against them, 0.0668 ms -> 0.0462 ms a frame, **1.45x**, with
+every paired run favouring it. The same probe on 1200 bodies that all move every
+frame — where there is nothing to cache and the comparison is pure overhead —
+measures identically to before (0.2496 ms vs 0.2498 ms).
 
 ## 2. Sorting happens once per frame, not once per call
 
@@ -151,10 +170,33 @@ read.
 
 | Scenario | Before | After | Why |
 |---|---|---|---|
-| create 5000 bodies | 1.559 ms | 1.783 ms | Four extra fields per `Body` for the lazy `angle`/`speed`. Construction is not a per-frame cost, and it buys 1.5x on integration. |
+| create 5000 bodies | 1.559 ms | 1.783 ms | Six extra fields per `Body`: four for the lazy `angle`/`speed`, two for the position the group caches were last built from. Construction is not a per-frame cost, and it buys 1.5x on integration and 1.45x on static groups. |
 | sort 1000 shuffled bodies | 0.195 ms | 0.210 ms | The cache check, plus the benchmark now calling `invalidate()` each frame to keep measuring a real sort. Pays for itself the first time a second call in the same frame hits the cache. |
 | sort 5000 shuffled bodies | 1.016 ms | 1.089 ms | Same. |
 | 50 retrieves against one reused tree | 0.503 ms | 0.556 ms | Within run-to-run noise. |
+
+## A note on measuring this
+
+The scenarios in the suite became fast enough that run-to-run variance on a
+shared machine is +/-20%, which is larger than several of the effects above. A
+single before/after run of the suite will happily show a 1.3x "win" on a
+scenario the change cannot possibly have touched.
+
+What the numbers here are based on:
+
+- Baselines re-measured against the previous library using the *same* harness,
+  not compared against numbers captured earlier in the session.
+- Builds run alternately rather than all of one then all of the other, so drift
+  in machine state affects both.
+- The global minimum across many rounds, not a mean.
+- A control scenario the change cannot affect, checked to be flat before
+  believing anything else.
+- For effects under about 20%, a dedicated probe that runs one scene for long
+  enough to swamp the noise, rather than the full suite.
+
+The last point is what settled the static group change: the full suite put it
+anywhere between 1.17x faster and 3.3x slower depending on the run, while a
+focused probe gave 1.45x consistently across every paired run.
 
 ## What is still true
 

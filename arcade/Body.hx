@@ -58,6 +58,19 @@ class Body implements Collidable
     /** The y position of the physics body. */
     public var y:Float = 0;
 
+    /**
+     * The position this body had at the end of the previous `preUpdate`.
+     *
+     * A group's cached ordering and spatial index describe its bodies as they
+     * were when the collision phase last began, so comparing against this tells
+     * us whether those caches still hold. Comparing positions rather than
+     * tracking every place a body can be moved means separation, world bounds
+     * and direct assignment are all covered without each having to remember to
+     * report itself.
+     */
+    var _cacheX:Float = 0;
+    var _cacheY:Float = 0;
+
     /** The previous x position of the physics body. */
     public var prevX:Float = 0;
     /** The previous y position of the physics body. */
@@ -430,6 +443,8 @@ class Body implements Collidable
         this.y = y;
         this.prevX = x;
         this.prevY = y;
+        this._cacheX = x;
+        this._cacheY = y;
         this.rotation = rotation;
         this.preRotation = rotation;
         this.width = width;
@@ -437,6 +452,24 @@ class Body implements Collidable
 
         updateHalfSize();
         updateCenter();
+
+    }
+
+    /**
+     * Tells every group holding this body that its cached ordering and spatial
+     * index no longer describe where this body is.
+     */
+    @:noCompletion
+    inline public function invalidateGroups():Void
+    {
+
+        if (this.groups != null)
+        {
+            for (i in 0...this.groups.length)
+            {
+                this.groups[i].invalidate();
+            }
+        }
 
     }
 
@@ -466,6 +499,10 @@ class Body implements Collidable
             this.height = height;
             updateHalfSize();
             this._reset = true;
+
+            //  The bounds a group's spatial index and sweep order were built
+            //  from have changed
+            invalidateGroups();
         }
 
     }
@@ -516,16 +553,6 @@ class Body implements Collidable
 
             this.updateCenter();
 
-            //  This body is about to move, so any cached ordering or spatial
-            //  index of the groups holding it no longer reflects reality
-            if (this.groups != null)
-            {
-                for (i in 0...this.groups.length)
-                {
-                    this.groups[i].invalidate();
-                }
-            }
-
             this.rotation = rotation;
 
             this.preRotation = this.rotation;
@@ -572,6 +599,19 @@ class Body implements Collidable
             this._dy = this.deltaY();
 
             this._reset = false;
+
+            //  Only tell the groups holding this body to drop their cached
+            //  ordering and spatial index if it has actually moved since they
+            //  were last built. A group of genuinely static bodies then keeps
+            //  its tree for as long as nothing in it moves, instead of
+            //  rebuilding it every frame.
+            if (this.x != this._cacheX || this.y != this._cacheY)
+            {
+                invalidateGroups();
+            }
+
+            this._cacheX = this.x;
+            this._cacheY = this.y;
 
         }
 
@@ -981,6 +1021,9 @@ class Body implements Collidable
 
             this.updateHalfSize();
             this.updateCenter();
+
+            //  Changes the bounds a group's spatial index was built from
+            invalidateGroups();
         }
         else
         {
@@ -1003,19 +1046,15 @@ class Body implements Collidable
 
         this.stop();
 
-        if (this.groups != null)
-        {
-            for (i in 0...this.groups.length)
-            {
-                this.groups[i].invalidate();
-            }
-        }
+        invalidateGroups();
 
         this.x = x;
         this.y = y;
 
         this.prevX = this.x;
         this.prevY = this.y;
+        this._cacheX = this.x;
+        this._cacheY = this.y;
 
         this.rotation = rotation;
         this.preRotation = this.rotation;

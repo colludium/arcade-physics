@@ -813,12 +813,33 @@ world.skipQuadTree = true;
 body.skipQuadTree = true;
 ```
 
-**Measure before relying on it.** The QuadTree is only used on the
-`body vs group` path, and that path rebuilds the whole tree for a single query.
-In the benchmarks (see [Testing and Benchmarks](#testing-and-benchmarks)) that
-makes it consistently slower than the plain scan it replaces, and slower still
-when the group is clustered into a small area. `group vs group` and
-`group vs itself` never use the tree at all.
+**How the QuadTree is managed.** Each `Group` owns its tree and rebuilds it at
+most once per frame, rather than once per collision call. The tree is also only
+built when more than one query is made against the group since its bodies last
+moved, because building a tree for a single query costs more than the scan it
+would replace.
+
+A group's cached ordering and tree are invalidated when one of its bodies
+actually moves, when the group's membership changes, and on `reset`, `setCircle`
+or a size change. `preUpdate` compares each body against where it was on the
+previous frame, so movement from velocity, from world bounds, from collision
+separation and from assigning to `body.x` directly are all picked up without you
+doing anything. A group of static level geometry therefore keeps its sort order
+and its spatial index for as long as nothing in it moves, instead of rebuilding
+them every frame.
+
+The one case that needs a hand is moving a body and then colliding it in the
+same frame without a `preUpdate` in between:
+
+```haxe
+enemy.x = 500;           // moved after preUpdate has already run this frame
+enemyGroup.invalidate(); // otherwise this frame's collisions use the old position
+```
+
+`group vs group` and `group vs itself` do not use the tree. When the group is
+sorted `LEFT_RIGHT` or `TOP_BOTTOM` they use the sort order directly as a sweep
+and prune broadphase, stopping the inner loop at the first body that starts
+beyond the current one.
 
 ### Optimization Tips
 
@@ -828,6 +849,9 @@ when the group is clustered into a small area. `group vs group` and
 4. **Immovable Objects** - Set `immovable = true` for static platforms and walls. Set `allowGravity = false` on those if your world has gravity
 5. **Follow Update Order** - Always: preUpdate → collisions → postUpdate
 6. **Batch Operations** - Process all bodies in each phase before moving to the next
+7. **Sort Your Groups** - `sortDirection` is not just about processing order: `LEFT_RIGHT` and `TOP_BOTTOM` let group collisions skip pairs that cannot overlap. `NONE` disables that and falls back to checking every pair
+8. **Keep Static Groups Static** - A group whose bodies never move keeps its sort order and spatial index between frames. Splitting immovable level geometry into its own group is worth it for that alone
+9. **Call the Typed Methods in Hot Loops** - `world.collide()` resolves its arguments at runtime on every call. Code making many small calls can use `collideBodyVsBody`, `collideBodyVsGroup` or `collideGroupVsGroup` directly and skip the dispatch
 
 ## API Reference
 
@@ -894,7 +918,7 @@ when the group is clustered into a small area. `group vs group` and
 **Methods:**
 - `add(body): Void` - Add body to group
 - `remove(body): Void` - Remove body from group
-- `invalidate(): Void` - Mark the group's cached sort order and spatial index as out of date, needed only when a body is moved without going through `preUpdate`
+- `invalidate(): Void` - Mark the group's cached sort order and spatial index as out of date, needed only when a body is moved and collided in the same frame without a `preUpdate` in between
 - `sortLeftRight(): Void` - Sort by X position
 - `sortRightLeft(): Void` - Sort by X position (reverse)
 - `sortTopBottom(): Void` - Sort by Y position
